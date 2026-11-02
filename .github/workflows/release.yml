@@ -137,7 +137,18 @@ jobs:
       - name: Try the app
         if: runner.os == 'macOS'
         run: |
-          hdiutil attach target/universal-apple-darwin/release/bundle/dmg/*.dmg -mountpoint /Volumes/libNIMA-try
-          /Volumes/libNIMA-try/libNIMA.app/Contents/MacOS/libnima --version
-          test -x /Volumes/libNIMA-try/libNIMA.app/Contents/MacOS/libnima-app
-          hdiutil detach /Volumes/libNIMA-try
+          # What fails is said as an annotation too, which anyone can read without the log.
+          must() {
+            if ! output=$("$@" 2>&1); then
+              echo "::error::$*: $(tail -1 <<< "$output")"
+              exit 1
+            fi
+            echo "$output"
+          }
+          image=$(find target/universal-apple-darwin/release/bundle/dmg -name 'libNIMA_*.dmg' | head -1)
+          place="$RUNNER_TEMP/libNIMA-try"
+          mkdir "$place"
+          must hdiutil attach "$image" -nobrowse -readonly -mountpoint "$place"
+          must "$place/libNIMA.app/Contents/MacOS/libnima" --version
+          must test -x "$place/libNIMA.app/Contents/MacOS/libnima-app"
+          hdiutil detach "$place" -force || true
