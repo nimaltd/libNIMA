@@ -1,0 +1,20 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "verbatimModuleSyntax": true,
+    "isolatedModules": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    // The modules the tests import name their .ts, as Node needs.
+    "allowImportingTsExtensions": true
+  },
+  "include": ["ui/src/**/*.ts", "ui/src/**/*.svelte", "vite.config.ts"],
+  // Node runs the tests as they are, with its own types.
+  "exclude": ["ui/src/**/*.test.ts"]
+}

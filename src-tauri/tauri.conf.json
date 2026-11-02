@@ -1,0 +1,54 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "libNIMA",
+  "mainBinaryName": "libnima-app",
+  "identifier": "com.nimaltd.libnima",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "libNIMA",
+        "width": 1100,
+        "height": 760,
+        "minWidth": 640,
+        "minHeight": 400,
+        "center": true,
+        "visible": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost https://api.github.com; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "publisher": "Nima Askari (NimaLTD)",
+    "copyright": "Copyright 2026 Nima Askari (NimaLTD)",
+    "category": "DeveloperTool",
+    "shortDescription": "Install embedded C libraries into your project",
+    "longDescription": "Open a project, add a library by its repository, see whether it fits, and install it. For STM32, Zephyr, ESP-IDF, Arduino and PlatformIO projects, the same on Windows, Linux and macOS.",
+    "homepage": "https://github.com/nimaltd/libNIMA",
+    "license": "Apache-2.0",
+    "licenseFile": "../LICENSE.md",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "windows": {
+      "nsis": {
+        "installerIcon": "icons/icon.ico"
+      }
+    }
+  }
+}

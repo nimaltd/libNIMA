@@ -1,0 +1,97 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows
+            os: windows-latest
+          - name: macOS
+            os: macos-latest
+          - name: Linux
+            os: ubuntu-22.04
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Linux packages for Tauri
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: lts/*
+          cache: npm
+
+      - run: npm ci
+
+      - name: UI type check
+        run: npm run check
+
+      - name: UI tests
+        run: npm test
+
+      # Tauri builds the UI into the app, so it has to exist before cargo runs.
+      - name: UI build
+        run: npm run build
+
+      - name: Rust format
+        run: cargo fmt --all --check
+
+      - name: Rust lint
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Rust tests
+        run: cargo test --workspace
+
+      # The registry, for real: only here, where the machine is thrown away afterwards.
+      - name: The command on the PATH
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $folder = (Resolve-Path target/debug).Path
+          $listed = { ([Environment]::GetEnvironmentVariable('Path', 'User') -split ';') -contains $folder }
+          ./target/debug/libnima --add-to-path
+          ./target/debug/libnima --add-to-path
+          if (-not (& $listed)) { throw 'it was not added' }
+          $count = (([Environment]::GetEnvironmentVariable('Path', 'User') -split ';') | Where-Object { $_ -eq $folder }).Count
+          if ($count -ne 1) { throw "it is there $count times" }
+          ./target/debug/libnima --remove-from-path
+          if (& $listed) { throw 'it was not taken off' }
+
+  # A build server has no web view, and the command has to work there anyway.
+  command:
+    name: The command with no web view
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build and test without Tauri's packages
+        run: cargo test -p libnima-core -p libnima-cli
+
+      - name: It runs
+        run: cargo run -p libnima-cli -- --version

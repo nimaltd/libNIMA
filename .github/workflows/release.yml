@@ -1,0 +1,143 @@
+name: Release
+
+# A tag such as v1.0.0 builds the installers for every OS and puts them on a
+# draft GitHub Release, published once all three are there. It can also be
+# started by hand from the Actions tab.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows
+            os: windows-latest
+            targets: ""
+            args: ""
+            alone: windows-x86_64
+          - name: macOS
+            os: macos-latest
+            # One app for Apple Silicon and Intel.
+            targets: aarch64-apple-darwin,x86_64-apple-darwin
+            args: --target universal-apple-darwin
+            alone: macos-universal
+          - name: Linux
+            # The oldest supported Ubuntu, so the AppImage runs on older systems too.
+            os: ubuntu-22.04
+            targets: ""
+            args: ""
+            alone: linux-x86_64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Linux packages for Tauri
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev file
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.targets }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: lts/*
+          cache: npm
+
+      - run: npm ci
+
+      - uses: tauri-apps/tauri-action@v0
+        id: tauri
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: v__VERSION__
+          releaseName: libNIMA v__VERSION__
+          releaseBody: |
+            Install embedded C libraries into STM32, Zephyr, ESP-IDF, Arduino and PlatformIO projects, from a window or from the libnima command.
+
+            **Downloads**
+            - Windows 10 and 11: the `-setup.exe` installer, or the `.msi`
+            - macOS, Apple Silicon and Intel: the `.dmg`
+            - Linux: the `.AppImage`, `.deb` or `.rpm`
+            - The command alone, for a build server or a container: `libnima-...-windows-x86_64.zip`, `-linux-x86_64.tar.gz` or `-macos-universal.tar.gz`. Unpack it where it can stay, and run `libnima --add-to-path`
+
+            The `-setup.exe`, `.msi`, `.deb` and `.rpm` put `libnima` on the PATH. From the `.dmg` or the `.AppImage`, use Tools, Add libnima to the PATH.
+
+            **The apps are not signed yet**
+            - Windows may say "Windows protected your PC": click More info, then Run anyway.
+            - macOS may say the app is damaged or cannot be checked: move it to Applications, then run `xattr -cr /Applications/libNIMA.app` in Terminal.
+            - Linux: `chmod +x` the AppImage.
+
+            What changed: [CHANGELOG.md](https://github.com/nimaltd/libNIMA/blob/main/CHANGELOG.md).
+          releaseDraft: true
+          prerelease: false
+          args: --config src-tauri/tauri.release.conf.json ${{ matrix.args }}
+
+      - name: The command alone
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          version="${{ steps.tauri.outputs.appVersion }}"
+          name="libnima-$version-${{ matrix.alone }}"
+          mkdir "$name"
+          built=src-tauri/binaries/libnima-universal-apple-darwin
+          [ -f "$built" ] || built=$(ls src-tauri/binaries/libnima-* | head -1)
+          case "$built" in
+            *.exe) cp "$built" "$name/libnima.exe" ;;
+            *) cp "$built" "$name/libnima" ;;
+          esac
+          cp LICENSE.md NOTICE "$name/"
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            7z a "$name.zip" "$name"
+            gh release upload "v$version" "$name.zip" --clobber
+          else
+            tar czf "$name.tar.gz" "$name"
+            gh release upload "v$version" "$name.tar.gz" --clobber
+          fi
+
+      # The installers tried as a person would, on a machine that is thrown away afterwards. The release is a draft until someone
+      # publishes it, so a failure here is seen first.
+      - name: Try the setup
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem target/release/bundle/nsis/*-setup.exe | Select-Object -First 1
+          Start-Process $setup.FullName -ArgumentList '/S' -Wait
+          $folder = "$env:LOCALAPPDATA\libNIMA"
+          if (-not (Test-Path "$folder\libnima-app.exe")) { throw 'the window is not there' }
+          $listed = ([Environment]::GetEnvironmentVariable('Path', 'User') -split ';') -contains $folder
+          if (-not $listed) { throw 'the command is not on the PATH' }
+          & "$folder\libnima.exe" --version
+          Start-Process "$folder\uninstall.exe" -ArgumentList '/S' -Wait
+          Start-Sleep -Seconds 5
+          $listed = ([Environment]::GetEnvironmentVariable('Path', 'User') -split ';') -contains $folder
+          if ($listed) { throw 'the command is still on the PATH' }
+
+      - name: Try the package
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get install -y ./target/release/bundle/deb/*.deb
+          which libnima libnima-app
+          libnima --version
+          sudo apt-get remove -y libnima
+
+      - name: Try the app
+        if: runner.os == 'macOS'
+        run: |
+          hdiutil attach target/universal-apple-darwin/release/bundle/dmg/*.dmg -mountpoint /Volumes/libNIMA-try
+          /Volumes/libNIMA-try/libNIMA.app/Contents/MacOS/libnima --version
+          test -x /Volumes/libNIMA-try/libNIMA.app/Contents/MacOS/libnima-app
+          hdiutil detach /Volumes/libNIMA-try

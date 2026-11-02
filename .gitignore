@@ -1,0 +1,16 @@
+# Rust
+/target/
+
+# UI
+/node_modules/
+/dist/
+
+# Made by Tauri on every build
+/src-tauri/gen/
+
+# The command, put there for the installers by scripts/build-command.mjs
+/src-tauri/binaries/
+
+# OS files
+.DS_Store
+Thumbs.db

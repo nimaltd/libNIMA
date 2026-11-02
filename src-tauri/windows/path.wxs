@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The .msi installs for every user, so the command goes on the PATH of the machine, for as long as it stays installed. -->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Fragment>
+    <DirectoryRef Id="INSTALLDIR">
+      <Component Id="LibnimaOnPath" Guid="089611B0-E614-46C4-BD18-89C73CBD6F7A" KeyPath="yes">
+        <Environment Id="LibnimaOnPathEntry" Name="PATH" Value="[INSTALLDIR]" Action="set" Part="last" Permanent="no" System="yes" />
+      </Component>
+    </DirectoryRef>
+  </Fragment>
+</Wix>

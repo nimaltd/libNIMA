@@ -1,0 +1,30 @@
+[package]
+name = "libnima-core"
+description = "Everything in libNIMA that does not draw on the screen or print: reading a library's libnima.yml, checking it against a project, and installing it"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+dunce = "1"
+regex = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+sha2 = "0.10"
+tempfile = "3"
+# Pure Rust. Ring, not aws-lc-rs, needs no NASM to build on Windows, and the platform verifier
+# trusts what the OS trusts, a company's own root certificate included.
+ureq = { version = "3", default-features = false, features = ["rustls", "platform-verifier", "gzip"] }
+zip = { version = "2", default-features = false, features = ["deflate"] }
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.55"
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
+
+[dev-dependencies]
+zip = { version = "2", default-features = false, features = ["deflate"] }

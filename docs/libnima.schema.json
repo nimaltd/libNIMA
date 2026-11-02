@@ -1,0 +1,1409 @@
+{
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "name": {
+      "type": [
+        "string",
+        "number",
+        "boolean"
+      ],
+      "description": "The library's name, and its folder in the project."
+    },
+    "description": {
+      "type": [
+        "string",
+        "number",
+        "boolean"
+      ],
+      "description": "One line about what it does, shown while it installs."
+    },
+    "repository": {
+      "type": [
+        "string",
+        "number",
+        "boolean"
+      ],
+      "description": "Where it comes from."
+    },
+    "license": {
+      "type": "string",
+      "description": "The licence's SPDX name."
+    },
+    "platform": {
+      "oneOf": [
+        {
+          "enum": [
+            "stm32",
+            "zephyr",
+            "esp32",
+            "arduino",
+            "pio"
+          ]
+        },
+        {
+          "type": "array",
+          "items": {
+            "enum": [
+              "stm32",
+              "zephyr",
+              "esp32",
+              "arduino",
+              "pio"
+            ]
+          }
+        }
+      ],
+      "description": "The projects it works in."
+    },
+    "version": {
+      "type": [
+        "string",
+        "number",
+        "boolean"
+      ],
+      "description": "Only when the first header has no @version tag, which is where it is read from otherwise."
+    },
+    "kind": {
+      "enum": [
+        "driver",
+        "middleware",
+        "rtos",
+        "protocol",
+        "filesystem",
+        "utility",
+        "bsp"
+      ],
+      "description": "What sort of library it is."
+    },
+    "category": {
+      "enum": [
+        "sensor",
+        "storage",
+        "display",
+        "communication",
+        "wireless",
+        "rtos",
+        "timing",
+        "power",
+        "input",
+        "math",
+        "system"
+      ],
+      "description": "What it is about, for listing it among others."
+    },
+    "provides": {
+      "oneOf": [
+        {
+          "type": "array",
+          "items": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "object"
+              }
+            ]
+          }
+        },
+        {
+          "type": "object"
+        }
+      ],
+      "description": "What it gives other libraries: rtos for an operating system."
+    },
+    "requires": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "libnima": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ],
+          "description": "The oldest libNIMA that reads this file, three numbers."
+        },
+        "libraries": {
+          "oneOf": [
+            {
+              "type": "array",
+              "items": {
+                "oneOf": [
+                  {
+                    "oneOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                          "source": {
+                            "type": [
+                              "string",
+                              "number",
+                              "boolean"
+                            ],
+                            "description": "A repository with no libnima.yml of its own, as owner/name."
+                          },
+                          "manifest": {
+                            "type": [
+                              "string",
+                              "number",
+                              "boolean"
+                            ],
+                            "description": "The file this library carries for that repository."
+                          },
+                          "minimum": {
+                            "type": [
+                              "string",
+                              "number",
+                              "boolean"
+                            ],
+                            "description": "The oldest version of it that will do."
+                          },
+                          "name": {
+                            "type": [
+                              "string",
+                              "number",
+                              "boolean"
+                            ],
+                            "description": "Its name in the project, when that is not the repository's."
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "type": "object"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "object"
+            }
+          ],
+          "description": "Other libraries, installed first when missing: osal >= 1.0.0, owner/lib or owner/lib@v1.2.0."
+        },
+        "peripherals": {
+          "type": "array",
+          "items": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "description": "Which peripheral."
+                  },
+                  "count": {
+                    "type": [
+                      "string",
+                      "number",
+                      "boolean"
+                    ],
+                    "description": "How many the library needs, one when left out."
+                  },
+                  "note": {
+                    "type": [
+                      "string",
+                      "number",
+                      "boolean"
+                    ],
+                    "description": "How to set it up, shown when it is missing."
+                  }
+                }
+              }
+            ]
+          },
+          "description": "What the board has to have, checked against the project where it can be."
+        }
+      },
+      "description": "What it needs from libNIMA, other libraries and the board."
+    },
+    "headers": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "from": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ],
+                "description": "The file, in the library."
+              },
+              "to": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ],
+                "description": "Where it lands in the library's folder in the project."
+              }
+            }
+          }
+        ]
+      },
+      "description": "Its .h files. The first is the one to #include, and its @version is the library's."
+    },
+    "sources": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "from": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ],
+                "description": "The file, in the library."
+              },
+              "to": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ],
+                "description": "Where it lands in the library's folder in the project."
+              }
+            }
+          }
+        ]
+      },
+      "description": "Its .c files, added to the build."
+    },
+    "include_dirs": {
+      "oneOf": [
+        {
+          "type": "array",
+          "items": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "object"
+              }
+            ]
+          }
+        },
+        {
+          "type": "object"
+        }
+      ],
+      "description": "Only when the guess from where the headers land is wrong."
+    },
+    "defines": {
+      "oneOf": [
+        {
+          "type": "array",
+          "items": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "object"
+              }
+            ]
+          }
+        },
+        {
+          "type": "object"
+        }
+      ],
+      "description": "Given to the whole build, NAME or NAME=value."
+    },
+    "options": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "description": {
+            "type": [
+              "string",
+              "number",
+              "boolean"
+            ],
+            "description": "The question asked about it."
+          },
+          "libraries": {
+            "oneOf": [
+              {
+                "type": "array",
+                "items": {
+                  "oneOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "object"
+                    }
+                  ]
+                }
+              },
+              {
+                "type": "object"
+              }
+            ],
+            "description": "Libraries this part needs, installed first."
+          },
+          "headers": {
+            "type": "array",
+            "items": {
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {}
+                }
+              ]
+            },
+            "description": "The .h files of this part."
+          },
+          "sources": {
+            "type": "array",
+            "items": {
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {}
+                }
+              ]
+            },
+            "description": "The .c files of this part."
+          },
+          "zephyr": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "project": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "cmake": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "after-zephyr": {
+                        "oneOf": [
+                          {
+                            "type": "array",
+                            "items": {
+                              "oneOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "object"
+                                }
+                              ]
+                            }
+                          },
+                          {
+                            "type": "object"
+                          }
+                        ],
+                        "description": "Lines for after Zephyr is found."
+                      },
+                      "before-zephyr": {
+                        "oneOf": [
+                          {
+                            "type": "array",
+                            "items": {
+                              "oneOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "object"
+                                }
+                              ]
+                            }
+                          },
+                          {
+                            "type": "object"
+                          }
+                        ],
+                        "description": "Lines for before Zephyr is found."
+                      }
+                    },
+                    "description": "Its blocks in the application's CMakeLists.txt, by place."
+                  }
+                },
+                "description": "Lines for the application's CMakeLists.txt."
+              },
+              "library": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "cmake": {
+                    "oneOf": [
+                      {
+                        "type": "array",
+                        "items": {
+                          "oneOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "object"
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "type": "object"
+                      }
+                    ],
+                    "description": "The lines of the library's own CMakeLists.txt."
+                  }
+                },
+                "description": "Lines for the library's own CMakeLists.txt."
+              }
+            },
+            "description": "This part's CMake lines in a Zephyr project."
+          },
+          "esp32": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "project": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "cmake": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "before-project": {
+                        "oneOf": [
+                          {
+                            "type": "array",
+                            "items": {
+                              "oneOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "object"
+                                }
+                              ]
+                            }
+                          },
+                          {
+                            "type": "object"
+                          }
+                        ],
+                        "description": "Lines for before project()."
+                      },
+                      "after-project": {
+                        "oneOf": [
+                          {
+                            "type": "array",
+                            "items": {
+                              "oneOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "object"
+                                }
+                              ]
+                            }
+                          },
+                          {
+                            "type": "object"
+                          }
+                        ],
+                        "description": "Lines for after project()."
+                      }
+                    },
+                    "description": "Its blocks in the project's CMakeLists.txt, by place."
+                  }
+                },
+                "description": "Lines for the project's CMakeLists.txt."
+              },
+              "library": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "cmake": {
+                    "oneOf": [
+                      {
+                        "type": "array",
+                        "items": {
+                          "oneOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "object"
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "type": "object"
+                      }
+                    ],
+                    "description": "The lines of its component's CMakeLists.txt."
+                  }
+                },
+                "description": "Lines for its component's CMakeLists.txt."
+              }
+            },
+            "description": "This part's CMake lines in an ESP-IDF project."
+          }
+        }
+      },
+      "description": "Parts the person installing chooses. Each name is what is typed after --with."
+    },
+    "once": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "from": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ],
+                "description": "The file, in the library."
+              },
+              "to": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ],
+                "description": "Where it lands in the project."
+              }
+            }
+          }
+        ]
+      },
+      "description": "Files made in the project when missing, then the person's: never replaced or removed."
+    },
+    "extras": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "from": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ],
+                "description": "The file or folder, in the library."
+              },
+              "to": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ],
+                "description": "Where it lands in the library's folder in the project."
+              },
+              "root": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ],
+                "description": "A file or folder for the project's folder, as the library's own."
+              }
+            }
+          }
+        ]
+      },
+      "description": "Copied as they are, never compiled. LICENSE.md and NOTICE when it names none."
+    },
+    "run": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "label": {
+            "type": [
+              "string",
+              "number",
+              "boolean"
+            ],
+            "description": "The name typed after --run: lower case letters, digits, _ and -."
+          },
+          "description": {
+            "type": [
+              "string",
+              "number",
+              "boolean"
+            ],
+            "description": "What it does, shown beside the question."
+          },
+          "command": {
+            "type": "array",
+            "items": {
+              "type": [
+                "string",
+                "number"
+              ]
+            },
+            "description": "The program, then each argument. It runs as it is, with no shell."
+          },
+          "args": {
+            "type": "array",
+            "items": {
+              "type": [
+                "string",
+                "number"
+              ]
+            },
+            "description": "Arguments that go after the command."
+          },
+          "unless": {
+            "type": [
+              "string",
+              "number",
+              "boolean"
+            ],
+            "description": "Skipped when this file is in the project already."
+          }
+        }
+      },
+      "description": "Commands run once the files are in. Each is shown in full and asked about first."
+    },
+    "stm32": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "requires": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "hal": {
+              "type": "boolean",
+              "description": "It uses the STM32 HAL. True when left out."
+            },
+            "cmsis": {
+              "type": "boolean",
+              "description": "It uses CMSIS directly."
+            },
+            "rtos": {
+              "enum": [
+                "none",
+                "optional",
+                "any",
+                "freertos",
+                "cmsis-os2",
+                "threadx"
+              ],
+              "description": "How it relates to an operating system. none when left out."
+            },
+            "hal_modules": {
+              "oneOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "oneOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "object"
+                      }
+                    ]
+                  }
+                },
+                {
+                  "type": "object"
+                }
+              ],
+              "description": "Must be enabled in stm32xxxx_hal_conf.h, and it is checked."
+            },
+            "c_standard": {
+              "type": "string",
+              "description": "The C standard the code is written for. c11 when left out."
+            }
+          },
+          "description": "What it needs of the project, checked before it goes in."
+        }
+      },
+      "description": "What only an STM32 project reads."
+    },
+    "zephyr": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "symbol": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ],
+          "description": "CONFIG_EXAMPLE=y turns the library on. The name in capitals when left out."
+        },
+        "settings": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "name": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ],
+                "description": "The setting's name in capitals, without CONFIG_."
+              },
+              "type": {
+                "enum": [
+                  "bool",
+                  "int",
+                  "hex",
+                  "string"
+                ],
+                "description": "What the setting holds."
+              },
+              "default": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ],
+                "description": "What it is when nobody sets it."
+              },
+              "range": {
+                "type": "array",
+                "items": {
+                  "type": [
+                    "string",
+                    "number"
+                  ]
+                },
+                "description": "The lowest and the highest, for an int or a hex."
+              },
+              "prompt": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ],
+                "description": "The line menuconfig shows for it."
+              },
+              "help": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ],
+                "description": "What menuconfig shows when asked about it."
+              }
+            }
+          },
+          "description": "The library's own settings, in its Kconfig, which menuconfig shows."
+        },
+        "project": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "conf": {
+              "oneOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "oneOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "object"
+                      }
+                    ]
+                  }
+                },
+                {
+                  "type": "object"
+                }
+              ],
+              "description": "Its block in prj.conf, beside the switch: symbols in capitals, such as LOG=n."
+            },
+            "sysbuild": {
+              "oneOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "oneOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "object"
+                      }
+                    ]
+                  }
+                },
+                {
+                  "type": "object"
+                }
+              ],
+              "description": "Its block in sysbuild.conf, as SB_CONFIG_."
+            },
+            "cmake": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "before-zephyr": {
+                  "oneOf": [
+                    {
+                      "type": "array",
+                      "items": {
+                        "oneOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "object"
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "type": "object"
+                    }
+                  ],
+                  "description": "Lines for before Zephyr is found."
+                },
+                "after-zephyr": {
+                  "oneOf": [
+                    {
+                      "type": "array",
+                      "items": {
+                        "oneOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "object"
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "type": "object"
+                    }
+                  ],
+                  "description": "Lines for after Zephyr is found."
+                }
+              },
+              "description": "Its blocks in the application's CMakeLists.txt, by place."
+            }
+          },
+          "description": "What it writes into the application's own files."
+        },
+        "library": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kconfig": {
+              "oneOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "oneOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "object"
+                      }
+                    ]
+                  }
+                },
+                {
+                  "type": "object"
+                }
+              ],
+              "description": "Defaults in its Kconfig, while the switch is on."
+            },
+            "conf": {
+              "oneOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "oneOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "object"
+                      }
+                    ]
+                  }
+                },
+                {
+                  "type": "object"
+                }
+              ],
+              "description": "Its fragment, zephyr/example.conf, read after prj.conf."
+            },
+            "cmake": {
+              "oneOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "oneOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "object"
+                      }
+                    ]
+                  }
+                },
+                {
+                  "type": "object"
+                }
+              ],
+              "description": "The lines of its own CMakeLists.txt."
+            }
+          },
+          "description": "What it writes into its own folder in the application."
+        }
+      },
+      "description": "What only a Zephyr application reads."
+    },
+    "esp32": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "settings": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "name": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ],
+                "description": "The setting's name in capitals, without CONFIG_."
+              },
+              "type": {
+                "enum": [
+                  "bool",
+                  "int",
+                  "hex",
+                  "string"
+                ],
+                "description": "What the setting holds."
+              },
+              "default": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ],
+                "description": "What it is when nobody sets it."
+              },
+              "range": {
+                "type": "array",
+                "items": {
+                  "type": [
+                    "string",
+                    "number"
+                  ]
+                },
+                "description": "The lowest and the highest, for an int or a hex."
+              },
+              "prompt": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ],
+                "description": "The line menuconfig shows for it."
+              },
+              "help": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ],
+                "description": "What menuconfig shows when asked about it."
+              }
+            }
+          },
+          "description": "The library's own settings, in its Kconfig, which menuconfig shows."
+        },
+        "project": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "conf": {
+              "oneOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "oneOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "object"
+                      }
+                    ]
+                  }
+                },
+                {
+                  "type": "object"
+                }
+              ],
+              "description": "Its block in sdkconfig.defaults: symbols in capitals, such as FREERTOS_HZ=1000."
+            },
+            "cmake": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "before-project": {
+                  "oneOf": [
+                    {
+                      "type": "array",
+                      "items": {
+                        "oneOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "object"
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "type": "object"
+                    }
+                  ],
+                  "description": "Lines for before project()."
+                },
+                "after-project": {
+                  "oneOf": [
+                    {
+                      "type": "array",
+                      "items": {
+                        "oneOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "object"
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "type": "object"
+                    }
+                  ],
+                  "description": "Lines for after project()."
+                }
+              },
+              "description": "Its blocks in the project's CMakeLists.txt, by place."
+            }
+          },
+          "description": "What it writes into the project's own files."
+        },
+        "library": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "requires": {
+              "oneOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "oneOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "object"
+                      }
+                    ]
+                  }
+                },
+                {
+                  "type": "object"
+                }
+              ],
+              "description": "REQUIRES of its component, the components it uses."
+            },
+            "cmake": {
+              "oneOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "oneOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "object"
+                      }
+                    ]
+                  }
+                },
+                {
+                  "type": "object"
+                }
+              ],
+              "description": "Lines of its component's CMakeLists.txt."
+            }
+          },
+          "description": "What goes into its component."
+        }
+      },
+      "description": "What only an ESP-IDF project reads."
+    },
+    "arduino": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "architectures": {
+          "oneOf": [
+            {
+              "type": "array",
+              "items": {
+                "oneOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "object"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "object"
+            }
+          ],
+          "description": "The boards it works on. * when left out."
+        },
+        "category": {
+          "enum": [
+            "Display",
+            "Communication",
+            "Signal Input/Output",
+            "Sensors",
+            "Device Control",
+            "Timing",
+            "Data Storage",
+            "Data Processing",
+            "Other"
+          ],
+          "description": "One of Arduino's. The nearest to category above when left out."
+        },
+        "author": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ],
+          "description": "The repository's owner when left out."
+        },
+        "maintainer": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ],
+          "description": "Who looks after it, with an address."
+        },
+        "depends": {
+          "oneOf": [
+            {
+              "type": "array",
+              "items": {
+                "oneOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "object"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "object"
+            }
+          ],
+          "description": "Libraries from Arduino's Library Manager."
+        }
+      },
+      "description": "What goes into library.properties."
+    },
+    "pio": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "project": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "build_flags": {
+              "oneOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "oneOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "object"
+                      }
+                    ]
+                  }
+                },
+                {
+                  "type": "object"
+                }
+              ],
+              "description": "After its defines, in its block of build_flags."
+            }
+          },
+          "description": "What it writes into the project's platformio.ini."
+        },
+        "library": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "frameworks": {
+              "oneOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "oneOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "object"
+                      }
+                    ]
+                  }
+                },
+                {
+                  "type": "object"
+                }
+              ],
+              "description": "The frameworks it works with. * when left out."
+            },
+            "platforms": {
+              "oneOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "oneOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "object"
+                      }
+                    ]
+                  }
+                },
+                {
+                  "type": "object"
+                }
+              ],
+              "description": "The PlatformIO platforms it works on. * when left out."
+            },
+            "dependencies": {
+              "oneOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "oneOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "object"
+                      }
+                    ]
+                  }
+                },
+                {
+                  "type": "object"
+                }
+              ],
+              "description": "Libraries from the PlatformIO Registry."
+            }
+          },
+          "description": "What goes into its library.json."
+        }
+      },
+      "description": "What only a PlatformIO project reads."
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://raw.githubusercontent.com/nimaltd/libNIMA/main/docs/libnima.schema.json",
+  "title": "libnima.yml",
+  "description": "What a library is and what goes where when it is installed. See docs/FORMAT.md.",
+  "required": [
+    "name",
+    "platform"
+  ]
+}
