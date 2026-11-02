@@ -148,7 +148,9 @@ jobs:
           image=$(find target/universal-apple-darwin/release/bundle/dmg -name 'libNIMA_*.dmg' | head -1)
           place="$RUNNER_TEMP/libNIMA-try"
           mkdir "$place"
-          must hdiutil attach "$image" -nobrowse -readonly -mountpoint "$place"
+          # The image asks a person to agree to its licence before it opens, and a plain copy of it does not.
+          must hdiutil convert "$image" -quiet -format UDTO -o "$place.cdr"
+          must hdiutil attach "$place.cdr" -nobrowse -readonly -mountpoint "$place"
           must "$place/libNIMA.app/Contents/MacOS/libnima" --version
           must test -x "$place/libNIMA.app/Contents/MacOS/libnima-app"
           hdiutil detach "$place" -force || true
