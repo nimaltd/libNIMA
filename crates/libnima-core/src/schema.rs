@@ -2010,6 +2010,44 @@ mod tests {
         );
     }
 
+    /// What a guide's example has for keys that the table does not: each line of a list of lines can be a title, so only what
+    /// the table has a place for is held to it.
+    #[test]
+    fn the_examples_in_the_guides_use_the_keys_of_the_table() {
+        let mut strange = Vec::new();
+
+        for (name, page) in [
+            ("stm32", include_str!("../../../docs/stm32.md")),
+            ("zephyr", include_str!("../../../docs/zephyr.md")),
+            ("esp32", include_str!("../../../docs/esp32.md")),
+            ("arduino", include_str!("../../../docs/arduino.md")),
+            ("pio", include_str!("../../../docs/pio.md")),
+        ] {
+            for block in page.split("```yaml\n").skip(1) {
+                let text = block.split("```").next().unwrap();
+                let node = match yaml::loads(text) {
+                    Ok(Some(node)) => node,
+                    Ok(None) => continue,
+                    Err(error) => panic!("{name}: {error}\n{text}"),
+                };
+                let mut seen = BTreeSet::new();
+                let mut found = Vec::new();
+
+                // An example can start part of the way down: below a key the text before it names.
+                if node.as_map().is_some() || node.as_list().is_some() {
+                    walk_page(&node, "", &mut seen, &mut found);
+                }
+
+                strange.extend(found.into_iter().map(|key| format!("{name}: {key}")));
+            }
+        }
+
+        assert!(
+            strange.is_empty(),
+            "keys that are not in the table: {strange:#?}"
+        );
+    }
+
     #[test]
     fn the_choices_of_the_table_are_those_the_reader_takes() {
         let root = folder();

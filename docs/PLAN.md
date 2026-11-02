@@ -125,7 +125,7 @@ crates/libnima-cli/    the libnima command
 src-tauri/             the libnima-app window: connects the engine to the UI
 ui/                    the UI: Svelte and TypeScript
 scripts/               what packaging runs: builds the command for the installers
-docs/                  this plan, and the format of libnima.yml
+docs/                  this plan, the format of libnima.yml, and a guide for each platform
 ```
 
 ---

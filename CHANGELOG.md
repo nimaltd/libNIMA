@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.0.0
 
 - libNIMA replaces lib-installer: the same installer rewritten in Rust, with a window beside the command line.
 - The window: open a project, see which platform it is and which file told, add libraries by repository, zip or folder, see each marked OK, CHECK or NO with the way to put it right, preview what an install would change on a copy of the project, install, update and uninstall. What a run does is shown library by library, each in a part of its own.
