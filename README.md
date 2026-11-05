@@ -7,7 +7,7 @@ Installs embedded C libraries into STM32, Zephyr, ESP-IDF, Arduino and PlatformI
 
 Copying two files into a project is easy. Doing it so the build actually picks them up, without clobbering the settings you changed last month, is the part this handles.
 
-It works with any library that has a [`libnima.yml`](docs/FORMAT.md) at the root of its repository, or an `installer.yml` from lib-installer, which it reads through a built-in converter. It replaces [lib-installer](https://github.com/nimaltd/lib-installer), and needs no Python.
+It works with any library that has a [`libnima.yml`](docs/FORMAT.md) at the root of its repository, or an older `installer.yml`, which it reads through a built-in converter. It needs no Python.
 
 | Platform | Its name in `libnima.yml` and `--platform` | What libNIMA does there |
 |---|---|---|
@@ -127,11 +127,11 @@ Put a `libnima.yml` at the root of the repository. [The format page](docs/FORMAT
 
 There is nothing else to copy into the repository: put the install line in your README, with your library's name in it.
 
-## Moving over from lib-installer
+## Moving over from the Python installers
 
-**A project lib-installer installed into moves over by itself** on the first run. `.lib-installer.json` becomes `.libnima.json`, and the lines that mark its blocks in your files name libnima from then on. Each file is saved first, as a `.bak`.
+**A project the Python installers installed into moves over by itself** on the first run. Its record becomes `.libnima.json`, and the lines that mark its blocks in your files name libnima from then on. Each file is saved first, as a `.bak`.
 
-**A library with only an `installer.yml`** asking for lib-installer 3.x or 4.x installs as it is. `libnima --convert` writes the same out as `libnima.yml`. A step written as a Python script needs Python on that machine, since libNIMA has none of its own.
+**A library with only an `installer.yml`** asking for version 3.x or 4.x installs as it is. `libnima --convert` writes the same out as `libnima.yml`. A step written as a Python script needs Python on that machine, since libNIMA has none of its own.
 
 **The commands are the same**, with `libnima` in front.
 

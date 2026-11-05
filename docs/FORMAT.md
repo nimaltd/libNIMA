@@ -176,7 +176,7 @@ folder, as it is written, with no shell. It finds where things are in its enviro
 | `LIBNIMA_PLATFORM` | the platform of the run, such as `zephyr` |
 | `LIBNIMA` | `libnima` |
 
-The same are there under `INSTALLER_`, for a program written for lib-installer. A step that ran before is not run again by an
+The same are there under `INSTALLER_`, for a program written for the Python installers. A step that ran before is not run again by an
 update, unless it changed or `--run` asks, and that holds when its `unless` file is gone too: `--yes` does not make a second
 key.
 
@@ -326,11 +326,11 @@ What it does not hold is an error naming the line, rather than a guess: anchors,
 or brackets that go on over several lines. A key given twice in one place is refused, where YAML would keep the last without a
 word. A value that starts with `*`, `&`, `!`, `%`, `@`, `{` or `[`, such as `'*.c'` or `'{library}/tools'`, goes in quotes.
 
-## From lib-installer
+## From installer.yml
 
-A repository with only an `installer.yml` asking for lib-installer 3.x or 4.x is read through a built-in converter, so nothing
+A repository with only an `installer.yml` asking for version 3.x or 4.x is read through a built-in converter, so nothing
 has to change on the day libNIMA arrives. `libnima --convert` writes the same out as `libnima.yml`, comments and order kept, and
-leaves `installer.yml` for whoever still installs with lib-installer. Anything older is refused, with the reason.
+leaves `installer.yml` as it is. Anything older is refused, with the reason.
 
 Each old key is refused in a `libnima.yml`, with where it went:
 
