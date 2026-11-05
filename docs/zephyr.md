@@ -15,7 +15,7 @@ libnima owner/example
 west build -b nrf52840dk/nrf52840
 ```
 
-To see it work first, take [lib-installer-example-zephyr](https://github.com/nimaltd/lib-installer-example-zephyr), a library made for trying libNIMA on. It builds in any Zephyr application, `native_sim` included, with its settings in Kconfig. Its README walks through an install, a setting changed in `prj.conf`, an option, and an uninstall. nRF Connect SDK applications are Zephyr applications, and install the same way.
+To see it work first, take [libnima-example-zephyr](https://github.com/nimaltd/libnima-example-zephyr), a library made for trying libNIMA on. It builds in any Zephyr application, `native_sim` included, with its settings in Kconfig. Its README walks through an install, a setting changed in `prj.conf`, an option, and an uninstall. nRF Connect SDK applications are Zephyr applications, and install the same way.
 
 Run from a folder whose `CMakeLists.txt` does not find Zephyr, or given a `--project` that is not there, libNIMA stops before writing anything and says so: a library put there would be in no build.
 

@@ -14,7 +14,7 @@ From your project's folder, the one holding `platformio.ini`, install a library 
 libnima owner/example
 ```
 
-To see it work first, take [lib-installer-example-pio](https://github.com/nimaltd/lib-installer-example-pio), a library made for trying libNIMA on. It builds with every framework, and on the native platform too, so you can run it on your computer with no board at all. Its README walks through a setting kept through an update, an option, and an uninstall.
+To see it work first, take [libnima-example-pio](https://github.com/nimaltd/libnima-example-pio), a library made for trying libNIMA on. It builds with every framework, and on the native platform too, so you can run it on your computer with no board at all. Its README walks through a setting kept through an update, an option, and an uninstall.
 
 Run from a folder with no `platformio.ini`, it stops before writing anything, since a library put there would be in no build.
 

@@ -15,7 +15,7 @@ libnima owner/example
 idf.py build
 ```
 
-To see it work first, take [lib-installer-example-esp32](https://github.com/nimaltd/lib-installer-example-esp32), a library made for trying libNIMA on. It builds for any ESP32 chip, with its settings in menuconfig. Its README walks through an install, a setting changed, an option, and an uninstall.
+To see it work first, take [libnima-example-esp32](https://github.com/nimaltd/libnima-example-esp32), a library made for trying libNIMA on. It builds for any ESP32 chip, with its settings in menuconfig. Its README walks through an install, a setting changed, an option, and an uninstall.
 
 It runs from any shell, ESP-IDF's own included: it needs nothing of ESP-IDF's. Run from a folder whose `CMakeLists.txt` does not include ESP-IDF's `project.cmake`, it stops before writing anything, since a library put there would be in no build.
 

@@ -52,11 +52,11 @@ libnima owner/example
 
 | Platform | Run it from | Try it with |
 |---|---|---|
-| STM32 | the project's root, the folder CubeMX made | `libnima nimaltd/lib-installer-example-stm32` |
-| Zephyr | the application's folder, the one holding `prj.conf` | `libnima nimaltd/lib-installer-example-zephyr` |
-| ESP-IDF | the project's folder, the one holding `main/` | `libnima nimaltd/lib-installer-example-esp32` |
-| Arduino | anywhere, or a sketch's folder | `libnima nimaltd/lib-installer-example-arduino` |
-| PlatformIO | the project's folder, the one holding `platformio.ini` | `libnima nimaltd/lib-installer-example-pio` |
+| STM32 | the project's root, the folder CubeMX made | `libnima nimaltd/libnima-example-stm32` |
+| Zephyr | the application's folder, the one holding `prj.conf` | `libnima nimaltd/libnima-example-zephyr` |
+| ESP-IDF | the project's folder, the one holding `main/` | `libnima nimaltd/libnima-example-esp32` |
+| Arduino | anywhere, or a sketch's folder | `libnima nimaltd/libnima-example-arduino` |
+| PlatformIO | the project's folder, the one holding `platformio.ini` | `libnima nimaltd/libnima-example-pio` |
 
 Then build as you always do. An update is the same command again: what you wrote between `USER CODE BEGIN` and `USER CODE END` is kept, and anything else of yours that would be lost is saved as a `.bak` first, a hand edit to the library's README or to a tool it put in `tools/` among them. `libnima --uninstall example` takes a library out, and gives your project's files back as they were.
 

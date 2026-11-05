@@ -14,7 +14,7 @@ Install a library by its GitHub owner and name:
 libnima owner/example
 ```
 
-To see it work first, take [lib-installer-example-arduino](https://github.com/nimaltd/lib-installer-example-arduino), a library made for trying libNIMA on. It builds for any board, and prints on Serial. Its README walks through both places a library can go, a setting kept through an update, an option, and an uninstall.
+To see it work first, take [libnima-example-arduino](https://github.com/nimaltd/libnima-example-arduino), a library made for trying libNIMA on. It builds for any board, and prints on Serial. Its README walks through both places a library can go, a setting kept through an update, an option, and an uninstall.
 
 libNIMA finds Arduino's libraries folder by itself, so it runs from anywhere. Run from a sketch's folder, it asks where the library goes, as below.
 

@@ -14,7 +14,7 @@ From the root of your STM32 project, the folder CubeMX made, install a library b
 libnima owner/example
 ```
 
-To see it work first, take [lib-installer-example-stm32](https://github.com/nimaltd/lib-installer-example-stm32), a library made for trying libNIMA on. It builds in any STM32 project CubeMX made, with nothing to set up, and blinks an LED without `HAL_Delay()`. Its README walks through an install, an update that keeps a setting you changed, an option, and an uninstall.
+To see it work first, take [libnima-example-stm32](https://github.com/nimaltd/libnima-example-stm32), a library made for trying libNIMA on. It builds in any STM32 project CubeMX made, with nothing to set up, and blinks an LED without `HAL_Delay()`. Its README walks through an install, an update that keeps a setting you changed, an option, and an uninstall.
 
 ### Files that become yours
 
