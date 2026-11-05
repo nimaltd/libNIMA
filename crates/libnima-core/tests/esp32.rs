@@ -312,6 +312,19 @@ fn a_library_moved_into_components_loses_its_block() {
     let library = demo(root.path(), "");
 
     install_in(&project, &library, Some("libs/demo"));
+
+    // --dir alone would leave the first copy behind, so the move is an uninstall and an install.
+    let (code, ui) = run(&asked(&project, &library, Some("components/demo")));
+
+    assert_eq!(code, 2, "{}", ui.out());
+    assert!(
+        ui.err().contains("libnima --uninstall demo"),
+        "{}",
+        ui.err()
+    );
+    assert!(!project.join("components").exists());
+
+    uninstall(&project, "demo");
     install_in(&project, &library, Some("components/demo"));
 
     assert_eq!(read(project.join("CMakeLists.txt")), CMAKELISTS);
@@ -333,15 +346,21 @@ fn a_half_written_block_is_left_for_the_user() {
 }
 
 #[test]
-fn with_no_project_the_lines_are_given_to_add_by_hand() {
+fn with_no_project_nothing_is_installed() {
     let root = tempfile::tempdir().unwrap();
     let project = root.path().join("empty");
 
     fs::create_dir_all(&project).unwrap();
 
-    let ui = install_in(&project, &demo(root.path(), ""), Some("libs/demo"));
+    let (code, ui) = run(&asked(&project, &demo(root.path(), ""), Some("libs/demo")));
 
-    says(&ui, "EXTRA_COMPONENT_DIRS");
+    assert_eq!(code, 2, "{}", ui.out());
+    assert!(
+        ui.err().contains("is not an ESP-IDF project"),
+        "{}",
+        ui.err()
+    );
+    assert!(fs::read_dir(&project).unwrap().next().is_none());
 }
 
 #[test]

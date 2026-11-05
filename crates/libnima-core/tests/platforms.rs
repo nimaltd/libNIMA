@@ -99,7 +99,13 @@ fn a_library_for_several_platforms_with_nobody_to_ask_needs_platform() {
 #[test]
 fn a_library_for_several_platforms_takes_the_records() {
     let root = tempfile::tempdir().unwrap();
-    let project = project_of(root.path(), "stm32", &[], false);
+    // A Zephyr application, which is what --platform says it is, and what its record says from then on.
+    let project = project_of(
+        root.path(),
+        "stm32",
+        &[("CMakeLists.txt", ZEPHYR_CMAKELISTS)],
+        false,
+    );
     let first = library_of(root.path(), "first", "zephyr", "");
     let second = library_of(root.path(), "demo", "[stm32, zephyr]", "");
     let mut asked = request(&project, &[&first]);
@@ -146,12 +152,17 @@ fn the_record_and_platform_must_agree() {
 #[test]
 fn two_libraries_take_the_platform_they_share() {
     let root = tempfile::tempdir().unwrap();
-    let project = project_of(root.path(), "stm32", &[], false);
+    let project = project_of(
+        root.path(),
+        "stm32",
+        &[("CMakeLists.txt", ZEPHYR_CMAKELISTS)],
+        false,
+    );
     let one = library_of(root.path(), "one", "[stm32, zephyr]", "");
     let two = library_of(root.path(), "two", "zephyr", "");
     let mut asked = request(&project, &[&one, &two]);
 
-    // STM32 by its look alone, and the two say otherwise: the libraries are not asked about what they agree on.
+    // Given, and what the two share: the libraries are not asked about what they agree on.
     asked.platform = Some(Platform::Zephyr);
 
     let (code, ui) = run(&asked);

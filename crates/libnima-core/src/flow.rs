@@ -23,10 +23,14 @@
 //! - From GitHub, from a zip, or from a folder outside the project, the files the manifest lists are copied into a folder
 //!   of the project, asked for or given with --dir. The source is never changed.
 //! - A folder already inside the project becomes the library where it stands. The repository scaffolding is removed from
-//!   it, because STM32CubeIDE compiles every .c under the project and a test harness brings a second main() with it.
+//!   it, because STM32CubeIDE compiles every .c under the project and a test harness brings a second main() with it. Its
+//!   libnima.yml stays. A git repository is never installed that way: its .git, and its history with it, are not
+//!   libNIMA's to remove, so the run stops and says to install from a copy outside the project.
 //!
 //! Either way the work happens in the same order: check the project against what the library needs, copy the files, then
-//! register them with the project. The checks and the registering are the target's, see target.rs.
+//! register them with the project. The checks and the registering are the target's, see target.rs. With several libraries
+//! in a run, every check of every one is made before the first is written, so a run that is refused leaves the project as
+//! it was.
 
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
@@ -37,7 +41,7 @@ use serde_json::{Map, Value, json};
 use crate::check;
 use crate::detect;
 use crate::download::{self, Client, DownloadError};
-use crate::installer::{self, InstallError, InstallResult, Removal};
+use crate::installer::{self, Held, InstallError, InstallResult, Others, Prepared, Removal};
 use crate::manifest::{self, Dependency, MANIFEST_NAME, Manifest};
 use crate::paths;
 use crate::platform::{Platform, PlatformArgs, arduino, target_of};
@@ -671,8 +675,8 @@ impl<'a> Session<'a> {
                 None
             }
             Err(error) => {
-                // Installing in place removes libnima.yml, so the most likely reason it is missing there is that this
-                // folder has already been installed once.
+                // libNIMA 1.0.0 removed libnima.yml from a folder it installed in place, so the most likely reason it is
+                // missing there is that this folder has already been installed once.
                 if source.in_place {
                     let root = source
                         .project_root
@@ -1178,6 +1182,221 @@ impl<'a> Session<'a> {
             )
     }
 
+    /// The folder the target works in for a library: the run's, or the one it was given for it, such as Arduino's libraries
+    /// folder for a library another one needs.
+    fn root_of(&self, source: &Source) -> PathBuf {
+        source
+            .project_root
+            .clone()
+            .unwrap_or_else(|| self.project_root.clone())
+    }
+
+    /// The folder a library of the plan goes into, when that is known without asking: where it already is, for one updated
+    /// because another needs a newer one, or the one the run gives it. None when it is asked for.
+    fn folder_known(step: &Step, given: Option<&str>) -> Option<String> {
+        // Not new to the user, so it goes where it is without a question.
+        let recorded = step
+            .installed
+            .as_ref()
+            .filter(|_| step.needed_by.is_some())
+            .and_then(|entry| entry.get("folder"))
+            .and_then(Value::as_str)
+            .map(str::to_string);
+
+        recorded.or_else(|| given.map(str::to_string))
+    }
+
+    /// Why a folder of the project cannot become the library where it stands, or None.
+    ///
+    /// A git repository is not installed in place: the scaffolding removed from it would take its .git, and the history in
+    /// it, which no install can give back.
+    fn in_place_refusal(&self, source: &Source) -> Option<String> {
+        if !source.in_place || !source.root.join(".git").exists() {
+            return None;
+        }
+
+        let place = show(&source.root, &self.root_of(source));
+
+        Some(format!(
+            "{place} is a git repository, and installing it where it stands would remove its repository files from it, \
+             its .git and history among them.\nInstall from a copy outside the project instead, or from GitHub."
+        ))
+    }
+
+    /// Why a library cannot go into this folder of the project, or None.
+    ///
+    /// The folder has to be inside the project and not the project's own, however it is written, so the record names it
+    /// from the project and an uninstall can take all of it out. It cannot be another library's folder, inside one or hold
+    /// one, where each would write over the other's files. And a library already installed stays in its folder, since an
+    /// install into another would leave the first copy behind, out of the record and out of the build.
+    fn folder_problem(
+        &self,
+        library: &Manifest,
+        given: &str,
+        destination: &Path,
+        root: &Path,
+        others: &Others,
+    ) -> Option<String> {
+        let root = paths::resolve(root);
+        let destination = paths::resolve(destination);
+        let name = &library.name;
+        let shown = show(&destination, &root);
+        let offered = self.target.folder_for(library, &root);
+
+        if paths::same(&destination, &root) {
+            return Some(format!(
+                "The folder {given} is the project's own, and a library needs one of its own. Give {name} one such as \
+                 {offered}."
+            ));
+        }
+
+        if !paths::within(&destination, &root) {
+            return Some(format!(
+                "The folder {given} is outside the project. Give {name} one inside it, such as {offered}."
+            ));
+        }
+
+        let recorded = installed_libraries(&root)
+            .get(name)
+            .and_then(|entry| entry.get("folder"))
+            .and_then(Value::as_str)
+            .filter(|folder| !folder.is_empty())
+            .map(str::to_string);
+
+        if let Some(recorded) = recorded
+            && !paths::same(&paths::resolve(&root.join(&recorded)), &destination)
+        {
+            return Some(format!(
+                "{name} is installed in {recorded}, and stays there: installing it into {shown} would leave a second \
+                 copy behind. To move it, take it out first with libnima --uninstall {name}, then install it again."
+            ));
+        }
+
+        let folder_of = |held: &Held| {
+            held.folder
+                .as_deref()
+                .map(|folder| show(folder, &root))
+                .unwrap_or_default()
+        };
+        // The folder the question offers, unless that is the one refused.
+        let such_as = if paths::same(&paths::resolve(&root.join(&offered)), &destination) {
+            String::new()
+        } else {
+            format!(", such as {offered}")
+        };
+
+        if let Some(held) = others.folder_of(&destination) {
+            let folder = folder_of(held);
+
+            return Some(if folder == shown {
+                format!(
+                    "{shown} is where {} is installed. Give {name} a folder of its own{such_as}.",
+                    held.name
+                )
+            } else {
+                format!(
+                    "{shown} is inside {folder}, the folder of {}. Give {name} a folder of its own{such_as}.",
+                    held.name
+                )
+            });
+        }
+
+        if let Some(held) = others.inside(&destination) {
+            return Some(format!(
+                "{shown} holds {}, the folder of {}. Give {name} a folder of its own{such_as}.",
+                folder_of(held),
+                held.name
+            ));
+        }
+
+        None
+    }
+
+    /// Whether a library can go into the project, in this folder, checked before anything is written: a folder of the
+    /// project it stands in is no repository, the project is one of the platform's, the folder is one it can have, and
+    /// nothing it would write is another library's or the user's. What it will hold, or why it cannot go in.
+    ///
+    /// `planned` is what the libraries of the run checked before it will hold, in the project each goes into.
+    pub(crate) fn checked(
+        &self,
+        source: &Source,
+        folder: &str,
+        planned: &[(PathBuf, Held)],
+    ) -> Result<Prepared, String> {
+        let library = source.library();
+        let root = self.root_of(source);
+
+        if let Some(why) = self.in_place_refusal(source) {
+            return Err(why);
+        }
+
+        if let Some(why) = self.target.not_a_project(&root) {
+            return Err(why);
+        }
+
+        let destination = if source.in_place {
+            source.root.clone()
+        } else {
+            root.join(folder)
+        };
+        let others = others_for(&root, &library.name, planned);
+
+        if let Some(why) = self.folder_problem(library, folder, &destination, &root, &others) {
+            return Err(why);
+        }
+
+        installer::prepare(
+            library,
+            &destination,
+            Some(&root),
+            self.target.as_ref(),
+            &others,
+        )
+        .map_err(|InstallError(message)| message)
+    }
+
+    /// The folder a library is checked in before it is installed: where it stands, the one known without asking, or the one
+    /// the question offers.
+    pub(crate) fn folder_to_check(&self, source: &Source, known: Option<String>) -> String {
+        let root = self.root_of(source);
+
+        if source.in_place {
+            return show(&source.root, &root);
+        }
+
+        known.unwrap_or_else(|| self.default_folder(source.library(), &root))
+    }
+
+    /// Every check of every library of the run, made before the first of them is written, so a run that is refused writes
+    /// nothing at all. Each is checked in the folder it goes into as far as that is known without asking: the one given,
+    /// the one it is in, or the one the question offers. What each will hold, for those after it to be checked against, or
+    /// the exit code to stop with, the reason shown.
+    fn check_all(
+        &mut self,
+        order: &[Step],
+        sources: &[Source],
+        request: &Request,
+    ) -> Result<Vec<(PathBuf, Held)>, i32> {
+        let mut planned: Vec<(PathBuf, Held)> = Vec::new();
+
+        for step in order {
+            let source = &sources[step.source];
+            let name = source.library().name.clone();
+            let known = Session::folder_known(step, folder_given(request, step, &name));
+            let folder = self.folder_to_check(source, known);
+
+            match self.checked(source, &folder, &planned) {
+                Ok(prepared) => planned.push((self.root_of(source), prepared.held(&name))),
+                Err(why) => {
+                    self.ui.error(&why);
+                    return Err(2);
+                }
+            }
+        }
+
+        Ok(planned)
+    }
+
     /// Ask where a library should go, or take the default when nobody can answer.
     fn ask_folder(&mut self, default: &str, name: &str) -> String {
         let question = Question {
@@ -1195,12 +1414,16 @@ impl<'a> Session<'a> {
     }
 
     /// Install one library of the plan. Returns an exit code.
-    fn install_step(&mut self, step: &Step, source: &Source, folder: Option<&str>) -> i32 {
+    fn install_step(
+        &mut self,
+        step: &Step,
+        source: &Source,
+        folder: Option<&str>,
+        planned: &[(PathBuf, Held)],
+    ) -> i32 {
         let library = source.library();
-        let root = source
-            .project_root
-            .clone()
-            .unwrap_or_else(|| self.project_root.clone());
+        let root = self.root_of(source);
+        let others = others_for(&root, &library.name, planned);
         let have = step
             .installed
             .as_ref()
@@ -1246,34 +1469,35 @@ impl<'a> Session<'a> {
         say_requirements(&findings, self.ui);
 
         let result = if source.in_place {
-            installer::install_in_place(library, &root, self.target.as_ref())
+            installer::install_in_place(library, &root, self.target.as_ref(), &others)
         } else {
             self.ui.say(report::blank());
 
             // A library being updated because another needs a newer one goes where it already is, without a question: it is
             // not new to the user. Anything else is asked for, or given with --dir.
-            let recorded = step
-                .installed
-                .as_ref()
-                .filter(|_| step.needed_by.is_some())
-                .and_then(|entry| entry.get("folder"))
-                .and_then(Value::as_str)
-                .map(str::to_string);
-
-            let chosen = match (recorded, folder) {
-                (Some(recorded), _) => recorded,
-                (None, Some(folder)) => folder.to_string(),
-                (None, None) => {
+            let chosen = match Session::folder_known(step, folder) {
+                Some(known) => known,
+                None => {
                     let default = self.default_folder(library, &root);
                     self.ask_folder(&default, &library.name)
                 }
             };
+
+            // Checked before the run in the folder the question offers. Another answer is checked here, before anything of
+            // this library is written.
+            if let Some(why) =
+                self.folder_problem(library, &chosen, &root.join(&chosen), &root, &others)
+            {
+                self.ui.error(&why);
+                return 2;
+            }
 
             installer::install_to(
                 library,
                 &root.join(chosen),
                 Some(&root),
                 self.target.as_ref(),
+                &others,
                 true,
             )
         };
@@ -1312,6 +1536,11 @@ impl<'a> Session<'a> {
             say_outcomes(&outcomes, self.ui);
         }
 
+        // Nothing at all added it to a build: what is left to the user is said above.
+        let built = outcomes
+            .iter()
+            .any(|outcome| outcome.status != Status::Manual);
+
         // The blocks the target wrote, so the next install can tell an edit inside one.
         let mut written = Map::new();
 
@@ -1343,7 +1572,7 @@ impl<'a> Session<'a> {
 
         let code = self.run_steps(library, result, project_root);
 
-        self.say_next(result, project_root, library);
+        self.say_next(result, project_root, library, built);
 
         code
     }
@@ -1430,8 +1659,9 @@ impl<'a> Session<'a> {
         1
     }
 
-    /// The last word, which is the one people actually read.
-    fn say_next(&mut self, result: &InstallResult, root: &Path, library: &Manifest) {
+    /// The last word, which is the one people actually read. Done only when the library is in a build: otherwise what is left
+    /// to do.
+    fn say_next(&mut self, result: &InstallResult, root: &Path, library: &Manifest, built: bool) {
         let header = self
             .target
             .include_line(library, &result.destination, root)
@@ -1439,10 +1669,19 @@ impl<'a> Session<'a> {
 
         self.ui.say(report::blank());
 
-        self.ui.say(report::good(match header {
-            Some(header) => format!("Done. #include \"{header}\" and you are away."),
-            None => "Done.".to_string(),
-        }));
+        if built {
+            self.ui.say(report::good(match header {
+                Some(header) => format!("Done. #include \"{header}\" and you are away."),
+                None => "Done.".to_string(),
+            }));
+        } else {
+            self.ui.say(report::warn(match header {
+                Some(header) => format!(
+                    "Installed, and in no build yet: add it as said above, then #include \"{header}\"."
+                ),
+                None => "Installed, and in no build yet: add it as said above.".to_string(),
+            }));
+        }
 
         if result.was_update() {
             self.ui.say(report::note(
@@ -1462,7 +1701,7 @@ impl<'a> Session<'a> {
         }
     }
 
-    /// Get every library onto disk, work out the order, then install them in it. Returns an exit code.
+    /// Get every library onto disk, work out the order, check each, then install them in it. Returns an exit code.
     pub fn install(&mut self, request: &Request) -> i32 {
         if request.folder.is_some() && request.libraries.len() > 1 {
             self.ui.error(
@@ -1479,12 +1718,13 @@ impl<'a> Session<'a> {
                 return 2;
             };
 
+            if let Some(why) = self.in_place_refusal(&source) {
+                self.ui.error(&why);
+                return 2;
+            }
+
             if source.in_place && request.folder.is_some() {
-                let root = source
-                    .project_root
-                    .clone()
-                    .unwrap_or_else(|| self.project_root.clone());
-                let place = show(&source.root, &root);
+                let place = show(&source.root, &self.root_of(&source));
 
                 self.ui.error(&format!(
                     "{place} is already in the project, so it becomes the library where it is and --dir has nothing to do.\n\
@@ -1515,27 +1755,35 @@ impl<'a> Session<'a> {
             }
         };
 
+        let planned = match self.check_all(&order, &sources, request) {
+            Ok(planned) => planned,
+            Err(code) => return code,
+        };
+
         let mut worst = 0;
+        let mut went_in: Vec<String> = Vec::new();
 
         for step in &order {
             let source = sources[step.source].clone();
-            let named = request
-                .folders
-                .iter()
-                .find(|(name, _)| *name == source.library().name)
-                .map(|(_, folder)| folder.as_str());
-            let folder = if step.needed_by.is_none() {
-                request.folder.as_deref().or(named)
-            } else {
-                named
-            };
-            let code = self.install_step(step, &source, folder);
+            let folder = folder_given(request, step, &source.library().name);
+            let code = self.install_step(step, &source, folder, &planned);
 
             // 1 is a run step that did not finish: the library is in, and so can the rest be. Anything else stops the run.
             if code != 0 && code != 1 {
+                // Past the checks before the run, only what they could not know stops it with others in already: a folder
+                // answered to a question, or a file that could not be written.
+                if !went_in.is_empty() {
+                    self.ui.say(report::warn(format!(
+                        "{} went in before this, and {} in the project.",
+                        went_in.join(", "),
+                        if went_in.len() > 1 { "stay" } else { "stays" }
+                    )));
+                }
+
                 return code;
             }
 
+            went_in.push(source.library().name.clone());
             worst = worst.max(code);
         }
 
@@ -1558,6 +1806,37 @@ impl<'a> Session<'a> {
 
         0
     }
+}
+
+/// The folder the run gives a library of its plan, with --dir or by its name in the window's list, or None.
+fn folder_given<'a>(request: &'a Request, step: &Step, name: &str) -> Option<&'a str> {
+    let named = request
+        .folders
+        .iter()
+        .find(|(found, _)| found == name)
+        .map(|(_, folder)| folder.as_str());
+
+    if step.needed_by.is_none() {
+        request.folder.as_deref().or(named)
+    } else {
+        named
+    }
+}
+
+/// The libraries a library of a run is checked against: those the record of its project has, and the others of the run that
+/// go into the same project, with what each will hold.
+fn others_for(root: &Path, name: &str, planned: &[(PathBuf, Held)]) -> Others {
+    let mut others = Others::recorded(root, name);
+    let root = paths::resolve(root);
+
+    others.held.extend(
+        planned
+            .iter()
+            .filter(|(at, held)| held.name != name && paths::same(&paths::resolve(at), &root))
+            .map(|(_, held)| held.clone()),
+    );
+
+    others
 }
 
 fn sorted(items: impl Iterator<Item = String>) -> Vec<String> {
@@ -1900,6 +2179,21 @@ pub fn run_with(mut client: Client, request: &Request, ui: &mut dyn Ui) -> i32 {
         Some(project) => paths::resolve(project),
         None => paths::resolve(Path::new(".")),
     };
+
+    // A mistyped folder is said to be one, rather than made and given a library no build will ever find.
+    if let Some(project) = &request.project
+        && !folder.is_dir()
+    {
+        let shown = paths::posix(project);
+
+        ui.error(&if folder.exists() {
+            format!("{shown}, given with --project, is a file. Give the folder of your project.")
+        } else {
+            format!("{shown}, given with --project, does not exist.")
+        });
+
+        return 2;
+    }
 
     let Some(platform) = choose_platform(request, &folder, &mut client, ui) else {
         return 2;

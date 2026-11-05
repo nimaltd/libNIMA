@@ -17,7 +17,7 @@ idf.py build
 
 To see it work first, take [lib-installer-example-esp32](https://github.com/nimaltd/lib-installer-example-esp32), a library made for trying libNIMA on. It builds for any ESP32 chip, with its settings in menuconfig. Its README walks through an install, a setting changed, an option, and an uninstall.
 
-It runs from any shell, ESP-IDF's own included: it needs nothing of ESP-IDF's.
+It runs from any shell, ESP-IDF's own included: it needs nothing of ESP-IDF's. Run from a folder whose `CMakeLists.txt` does not include ESP-IDF's `project.cmake`, it stops before writing anything, since a library put there would be in no build.
 
 ### What happens
 
@@ -176,7 +176,7 @@ Files
   created version.txt  yours from now on
 ```
 
-From then on it is yours. An update never writes over it, and says so with `kept version.txt  yours`. An uninstall leaves it where it is, with `kept version.txt  yours, not removed`. A library can never put such a file over one libNIMA manages or reads, `CMakeLists.txt`, `main/CMakeLists.txt`, `sdkconfig` and `sdkconfig.defaults`, nor outside your project's folder.
+From then on it is yours. An update never writes over it, and says so with `kept version.txt  yours`. An uninstall leaves it where it is, with `kept version.txt  yours, not removed`. A library can never put such a file over one libNIMA manages or reads, `CMakeLists.txt`, `main/CMakeLists.txt`, `sdkconfig` and `sdkconfig.defaults`, nor outside your project's folder, nor into a library's folder, whose next install would replace it.
 
 ### What you see
 
@@ -228,7 +228,7 @@ libnima --uninstall example
 
 From your project's folder, or with `--project`. Its block goes from `sdkconfig.defaults`, and its blocks from `CMakeLists.txt` when it has any, its name goes from main's `REQUIRES` and `PRIV_REQUIRES`, and a list left with nothing in it goes too, the files libNIMA wrote go from its component, and then the library's own files. Installed and then uninstalled, your project's files are back to the byte they were, except the [files that became yours](#files-that-become-yours), which stay.
 
-What was yours is saved before it goes, as a `.bak` beside it: any file of the library you wrote in between its `USER CODE` lines or changed by hand. A file you put in the library's folder yourself is left where it is, and the folder with it.
+What was yours is saved before it goes, as a `.bak` beside it: any file of the library you wrote in between its `USER CODE` lines or changed by hand, its extras and tools among them. A file you put in the library's folder yourself is left where it is, and the folder with it.
 
 A setting you set yourself in `sdkconfig.defaults` is your line, and it stays. The symbol it sets went with the library, though, so libNIMA names every such line, for you to take out:
 

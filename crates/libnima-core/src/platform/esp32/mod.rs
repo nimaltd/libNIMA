@@ -327,9 +327,21 @@ impl Target for Esp32 {
         "Run this from your project's folder, the one holding CMakeLists.txt and main/."
     }
 
+    /// A project is a CMakeLists.txt that includes ESP-IDF's project.cmake. Without one, nothing would build the library.
+    fn not_a_project(&self, project_root: &Path) -> Option<String> {
+        project::find_project(project_root).is_none().then(|| {
+            format!(
+                "{} is not an ESP-IDF project: it has no CMakeLists.txt with include(.../project.cmake). Run this from \
+                 your project's folder, the one holding CMakeLists.txt and main/, or give it with --project. Nothing was \
+                 installed.",
+                crate::paths::posix(project_root)
+            )
+        })
+    }
+
     /// Libraries go into the project's components folder, where ESP-IDF finds them.
     fn folder_for(&self, library: &Manifest, _project_root: &Path) -> String {
-        format!("{}/{}", project::COMPONENTS, library.name)
+        super::default_folder(Platform::Esp32, &library.name)
     }
 
     /// The project's files this edits or reads as the project's own, which a once file must never be.

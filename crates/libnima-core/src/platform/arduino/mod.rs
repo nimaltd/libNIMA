@@ -343,7 +343,7 @@ impl Target for Arduino {
         if self.in_libraries(project_root) {
             library.name.clone()
         } else {
-            format!("src/{}", library.name)
+            super::default_folder(Platform::Arduino, &library.name)
         }
     }
 

@@ -127,7 +127,7 @@ Files
   created arduino_secrets.h  yours from now on
 ```
 
-From then on it is yours. An update never writes over it, and says so with `kept arduino_secrets.h  yours`. An uninstall leaves it where it is, with `kept arduino_secrets.h  yours, not removed`. A library can never put such a file over the sketch's `.ino` files, nor outside the sketch's folder.
+From then on it is yours. An update never writes over it, and says so with `kept arduino_secrets.h  yours`. An uninstall leaves it where it is, with `kept arduino_secrets.h  yours, not removed`. A library can never put such a file over the sketch's `.ino` files, nor outside the sketch's folder, nor into a library's folder, whose next install would replace it.
 
 The libraries folder is shared by every sketch, so it has no place for such files. A library that brings them, installed there, stops before anything is written and says to install it into a sketch, with `--into sketch`.
 
@@ -176,7 +176,7 @@ The record of what is installed, and where, is `.libnima.json`: in the libraries
 libnima --uninstall example
 ```
 
-Run from a sketch, it is taken out of the sketch when the sketch has it, and out of the libraries folder otherwise. `--into` says which, when it is in both. Its files go, and its `library.properties`. What was yours is saved before it goes, as a `.bak` beside it: a configuration header with your settings in it, or any file of the library you changed by hand. A file you put in the library's folder yourself is left where it is, and the folder with it, and so are the [files that became yours](#files-that-become-yours).
+Run from a sketch, it is taken out of the sketch when the sketch has it, and out of the libraries folder otherwise. `--into` says which, when it is in both. Its files go, and its `library.properties`. What was yours is saved before it goes, as a `.bak` beside it: a configuration header with your settings in it, or any file of the library you changed by hand, its extras among them. A file you put in the library's folder yourself is left where it is, and the folder with it, and so are the [files that became yours](#files-that-become-yours).
 
 A library another one needs stays, and libNIMA says which needs it. One that came into the libraries folder because a library in a sketch needed it stays there too, since other sketches may use it.
 

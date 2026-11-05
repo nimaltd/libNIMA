@@ -26,7 +26,7 @@ Files
   created Core/Src/example_port.c  yours from now on
 ```
 
-From then on it is yours. An update never writes over it, and says so with `kept Core/Src/example_port.c  yours`. An uninstall leaves it where it is, with `kept Core/Src/example_port.c  yours, not removed`. It is not added to any IDE project either: it is your project's own file. STM32CubeIDE builds every file in its source folders, `Core/Src` among them, so there it is built with the rest. In a CMake, Keil or IAR project, which list their files one by one, add it the way you add a file of your own. A library can never put such a file over one libNIMA manages or CubeMX writes, such as `CMakeLists.txt`, `.cproject`, the `.ioc`, the Makefile or `stm32xxxx_hal_conf.h`, nor outside your project's folder.
+From then on it is yours. An update never writes over it, and says so with `kept Core/Src/example_port.c  yours`. An uninstall leaves it where it is, with `kept Core/Src/example_port.c  yours, not removed`. It is not added to any IDE project either: it is your project's own file. STM32CubeIDE builds every file in its source folders, `Core/Src` among them, so there it is built with the rest. In a CMake, Keil or IAR project, which list their files one by one, add it the way you add a file of your own. A library can never put such a file over one libNIMA manages or CubeMX writes, such as `CMakeLists.txt`, `.cproject`, the `.ioc`, the Makefile or `stm32xxxx_hal_conf.h`, nor outside your project's folder, nor into a library's folder, whose next install would replace it.
 
 ### Updating a library
 
@@ -92,7 +92,7 @@ Files
 Done. example is out of the project.
 ```
 
-What was yours is saved before it goes, as a `.bak` beside it: a configuration file the library created, and any file of the library you wrote in between its `USER CODE` lines or changed by hand. A file you put in the library's folder yourself is left where it is, and the folder with it, and so are the [files that became yours](#files-that-become-yours). A define another installed library also asks for stays.
+What was yours is saved before it goes, as a `.bak` beside it: a configuration file the library created, and any file of the library you wrote in between its `USER CODE` lines or changed by hand, its extras and tools among them. A file you put in the library's folder yourself is left where it is, and the folder with it, and so are the [files that became yours](#files-that-become-yours). A define another installed library also asks for stays.
 
 A library another one needs stays, and libNIMA says which needs it:
 
@@ -155,6 +155,12 @@ Done. #include "example.h" and you are away.
 
 The first line says where the library came from: `Fetching owner/example ...` from GitHub, `Reading ...` from a zip or a folder.
 
+In a project with no IDE file libNIMA can read, the files go in all the same, with what to add to your build by hand, and the last line says so in place of `Done`:
+
+```
+Installed, and in no build yet: add it as said above, then #include "example.h".
+```
+
 ---
 
 ## What it does for you
@@ -192,7 +198,7 @@ The generated `example/CMakeLists.txt` declares an INTERFACE target, not a STATI
 
 **Edits the project, not a copy of it.** IAR leaves a `Backup of <name>.ewp` beside the real project when it upgrades one, and that copy is a valid project file whose name sorts first. The workspace file is asked which project is the real one, and backups are skipped.
 
-**Keeps the repository out of your build.** CubeIDE compiles every `.c` under your project, and a library repository ships a test suite with its own `main()`. Left in place, that breaks your build with an error that points nowhere useful. So only the listed files are copied, and a repository that sits inside your project has everything else removed from it.
+**Keeps the repository out of your build.** CubeIDE compiles every `.c` under your project, and a library repository ships a test suite with its own `main()`. Left in place, that breaks your build with an error that points nowhere useful. So only the listed files are copied, and a repository that sits inside your project has the rest of what a repository holds removed from it, all but its `libnima.yml`. A git repository in your project is not installed where it stands at all, since its `.git` would go with the rest: install it from a copy outside the project.
 
 **Tells you what the library needs.** It reads your `stm32xxxx_hal_conf.h` and `.ioc` and warns before you hit a confusing compile error:
 

@@ -2232,12 +2232,21 @@ fn a_define_edited_into_the_record_is_never_used() {
 
 #[test]
 fn a_copy_in_another_folder_drops_nothing() {
+    // It is refused, since the first copy would be left behind, and so it takes nothing of the first one's out either.
     let root = tempfile::tempdir().unwrap();
     let project = project_with(root.path(), ides(&["keil"]));
 
     installed(&project, &defining(root.path(), "v1", &[LFS]), "demo");
-    installed(&project, &defining(root.path(), "v2", &[]), "other");
 
+    let (code, ui) = install(&project, &defining(root.path(), "v2", &[]), "other");
+
+    assert_eq!(code, 2, "{}", ui.out());
+    assert!(
+        ui.err().contains("demo is installed in demo"),
+        "{}",
+        ui.err()
+    );
+    assert!(!project.join("other").exists());
     assert!(read(project.join("MDK/Proj.uvprojx")).contains(LFS));
 }
 

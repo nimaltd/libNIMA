@@ -10,11 +10,13 @@
 //!
 //! CHECK never stops an install, because a project can be laid out in ways this cannot read, and being wrong must never stop
 //! someone using the library. NO is for what is known for certain: a library for another platform, one that needs a newer
-//! libNIMA, or a file that does not describe a usable library.
+//! libNIMA, a file that does not describe a usable library, or anything the install itself refuses before it writes a
+//! thing, such as a folder that is no project of the platform, or a file of the user's where the library's would go.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::flow::{Request, Session, Source, say_requirements};
+use crate::installer::Held;
 use crate::manifest::{self, MANIFEST_NAME};
 use crate::paths;
 use crate::platform::Platform;
@@ -171,6 +173,8 @@ pub fn lint(folder: &Path) -> Result<(std::path::PathBuf, Vec<Problem>), String>
 pub fn run(session: &mut Session, request: &Request) -> i32 {
     let mut worst = 0;
     let mut marks: Vec<(String, Mark, String)> = Vec::new();
+    // What the libraries checked before each will hold, as an install of them all would check it.
+    let mut planned: Vec<(PathBuf, Held)> = Vec::new();
 
     for given in &request.libraries {
         session.ui().new_part();
@@ -208,8 +212,26 @@ pub fn run(session: &mut Session, request: &Request) -> i32 {
 
         say_requirements(&findings, session.ui());
 
-        let mark = mark_of(&findings);
         let name = library.name.clone();
+
+        // What the install would refuse before writing a thing, in the folder --dir gives, or the one it would offer.
+        let given = request
+            .folder
+            .clone()
+            .filter(|_| request.libraries.len() == 1);
+        let folder = session.folder_to_check(&source, given);
+
+        match session.checked(&source, &folder, &planned) {
+            Ok(prepared) => planned.push((root.clone(), prepared.held(&name))),
+            Err(why) => {
+                session.ui().error(&why);
+                marks.push((name, Mark::No, "see above".to_string()));
+                worst = 1;
+                continue;
+            }
+        }
+
+        let mark = mark_of(&findings);
         let first = findings
             .iter()
             .find(|finding| finding.level == Level::Warn)

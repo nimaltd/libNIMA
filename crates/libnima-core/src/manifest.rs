@@ -1944,6 +1944,64 @@ fn warnings_of(manifest: &Manifest, data: &Mapping, running: Option<Platform>) -
     found
 }
 
+/// A once file is the project's own from the moment it lands, so it cannot land in a library's folder, which every
+/// install of that library replaces and its uninstall takes away: neither in the folder this library goes into nor in
+/// that of a library it names, as the platform offers them. Where each really is is known only in a project, and the
+/// install checks that against the project's record.
+fn refuse_once_in_a_library(manifest: &Manifest, platform: Platform) -> Result<(), ManifestError> {
+    let mut folders = vec![(
+        manifest.name.as_str(),
+        platform::default_folder(platform, &manifest.name),
+    )];
+
+    // On Arduino, a library another one needs goes into the libraries folder, never into the sketch the once files are in.
+    if platform != Platform::Arduino {
+        folders.extend(
+            manifest
+                .requires
+                .libraries
+                .iter()
+                .chain(manifest.options.iter().flat_map(|option| &option.libraries))
+                .map(|dependency| {
+                    (
+                        dependency.name.as_str(),
+                        platform::default_folder(platform, &dependency.name),
+                    )
+                }),
+        );
+    }
+
+    for entry in &manifest.once {
+        let landing = paths::clean_posix(&entry.destination).to_lowercase();
+        let found = folders.iter().find(|(_, folder)| {
+            let folder = folder.to_lowercase();
+
+            landing == folder || landing.starts_with(&format!("{folder}/"))
+        });
+
+        if let Some((name, folder)) = found {
+            return Err(ManifestError::at(
+                entry.line,
+                if *name == manifest.name {
+                    format!(
+                        "once puts {} inside its own folder, {folder}, which every install replaces. A file of the \
+                         library's own belongs under headers or sources, with USER CODE sections for what is the user's.",
+                        entry.destination
+                    )
+                } else {
+                    format!(
+                        "once puts {} inside {folder}, where {name} goes, which every install of {name} replaces. A \
+                         file of the project's own belongs in a folder of the project's.",
+                        entry.destination
+                    )
+                },
+            ));
+        }
+    }
+
+    Ok(())
+}
+
 /// What a library's file says, checked against the library's own files, for the platform
 /// of the run.
 fn checked(
@@ -2158,6 +2216,10 @@ fn checked(
             "It sends files outside the install folder, which is never allowed: {}",
             escaping.join(", ")
         ))));
+    }
+
+    if let Some(platform) = running {
+        refuse_once_in_a_library(&manifest, platform).map_err(in_file)?;
     }
 
     let mut manifest = manifest;

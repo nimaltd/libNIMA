@@ -248,6 +248,25 @@ fn checked(library: &Path, project: &Path) -> Vec<(Level, String)> {
 }
 
 #[test]
+fn with_no_platformio_ini_nothing_is_installed() {
+    let root = tempfile::tempdir().unwrap();
+    let empty = root.path().join("empty");
+
+    fs::create_dir_all(&empty).unwrap();
+
+    let (code, ui) = run(&common::request(&empty, &[&demo(root.path(), "")]));
+
+    assert_eq!(code, 2, "{}", ui.out());
+    assert!(
+        ui.err()
+            .contains("is not a PlatformIO project: it has no platformio.ini"),
+        "{}",
+        ui.err()
+    );
+    assert!(fs::read_dir(&empty).unwrap().next().is_none());
+}
+
+#[test]
 fn no_platformio_ini_is_one_warning() {
     let root = tempfile::tempdir().unwrap();
     let empty = root.path().join("empty");

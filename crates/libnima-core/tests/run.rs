@@ -1324,6 +1324,37 @@ fn an_update_does_not_run_a_step_that_ran_before() {
 }
 
 #[test]
+fn a_step_that_ran_before_is_not_run_again_when_its_file_is_gone() {
+    // A fresh clone of a product that keeps its key out of git. A new key would not be the one the devices know.
+    let root = tempfile::tempdir().unwrap();
+    let project = stm32_project(root.path());
+    let source = with_key_step(root.path());
+    let mut asked = request(&project, &[&source]);
+    folder_of(&mut asked);
+    asked.yes = true;
+
+    assert_eq!(run(offline(), &asked).0, 0);
+    assert!(project.join("sign_key.pem").is_file());
+
+    fs::remove_file(project.join("sign_key.pem")).unwrap();
+
+    let (code, ui) = run(offline(), &asked);
+
+    assert_eq!(code, 0, "{}", ui.err());
+    assert!(!project.join("sign_key.pem").exists(), "it ran again");
+    assert!(
+        ui.out().contains("ran before. Run it again with --run key"),
+        "{}",
+        ui.out()
+    );
+
+    asked.run_on = vec!["key".to_string()];
+
+    assert_eq!(run(offline(), &asked).0, 0);
+    assert!(project.join("sign_key.pem").is_file());
+}
+
+#[test]
 fn a_changed_step_is_asked_about_again() {
     let root = tempfile::tempdir().unwrap();
     let project = stm32_project(root.path());
@@ -1763,4 +1794,129 @@ fn a_check_of_what_cannot_go_in_says_no() {
     assert_eq!(code, 1);
     assert!(ui.out().contains("NO"), "{}", ui.out());
     assert!(ui.err().contains("do not exist"), "{}", ui.err());
+}
+
+// ----------------------------------------------------------------------------
+// Several libraries, all or nothing
+// ----------------------------------------------------------------------------
+
+/// A library with its tools for the project's folder.
+fn with_tools(root: &Path, name: &str, tools: &[(&str, &str)]) -> PathBuf {
+    library(
+        root,
+        name,
+        &format!("{DEMO_CODE}extras:\n  - root: tools\n"),
+        tools,
+    )
+}
+
+#[test]
+fn a_run_that_is_refused_writes_nothing_at_all() {
+    // Every check of every library is made before the first is written, so a refusal of the second leaves no trace of
+    // the first.
+    let root = tempfile::tempdir().unwrap();
+    let liba = library(root.path(), "liba", DEMO_CODE, &[]);
+    let refused = [
+        (
+            // A once file on a file libNIMA edits.
+            library(
+                root.path(),
+                "libc",
+                &format!("{DEMO_CODE}once:\n  - from: x.txt\n    to: CMakeLists.txt\n"),
+                &[("x.txt", "x\n")],
+            ),
+            None,
+            "edits or reads as the project's own",
+        ),
+        (
+            // The user's own file where a tool of the library's goes.
+            with_tools(root.path(), "libt", &[("tools/libt.py", "the library's\n")]),
+            Some(("tools/libt.py", "mine\n")),
+            "libt would write tools/libt.py in the project, where a file of yours already is",
+        ),
+    ];
+
+    for (index, (second, mine, said)) in refused.iter().enumerate() {
+        let project = stm32_project(&root.path().join(format!("p{index}")));
+
+        if let Some((path, text)) = mine {
+            write(project.join(path), text);
+        }
+
+        let before = listing(&project);
+        let (code, ui) = run(offline(), &request(&project, &[&liba, second]));
+
+        assert_eq!(code, 2, "{}", ui.out());
+        assert!(ui.err().contains(said), "{}", ui.err());
+        assert_eq!(listing(&project), before, "liba went in all the same");
+        assert!(!ui.out().contains("liba 1"), "{}", ui.out());
+    }
+}
+
+#[test]
+fn two_libraries_of_a_run_never_share_a_file() {
+    let root = tempfile::tempdir().unwrap();
+    let libx = with_tools(root.path(), "libx", &[("tools/shared.py", "# libx\n")]);
+    let liby = with_tools(root.path(), "liby", &[("tools/shared.py", "# liby\n")]);
+    let project = stm32_project(root.path());
+    let before = listing(&project);
+    let (code, ui) = run(offline(), &request(&project, &[&libx, &liby]));
+
+    assert_eq!(code, 2, "{}", ui.out());
+    assert!(
+        ui.err().contains(
+            "liby would put tools/shared.py in the project, where libx has a file of its own"
+        ),
+        "{}",
+        ui.err()
+    );
+    assert_eq!(listing(&project), before);
+
+    // --check of the two says the same of the second.
+    let mut checked = request(&project, &[&libx, &liby]);
+    checked.check_only = true;
+
+    let (code, ui) = run(offline(), &checked);
+
+    assert_eq!(code, 1, "{}", ui.out());
+    assert!(ui.out().contains("NO      liby"), "{}", ui.out());
+    assert!(!ui.out().contains("NO      libx"), "{}", ui.out());
+
+    // One at a time, the second is refused the same way, naming the first.
+    assert_eq!(run(offline(), &request(&project, &[&libx])).0, 0);
+
+    let (code, ui) = run(offline(), &request(&project, &[&liby]));
+
+    assert_eq!(code, 2, "{}", ui.out());
+    assert!(
+        ui.err().contains("where libx has a file of its own"),
+        "{}",
+        ui.err()
+    );
+    assert_eq!(read(project.join("tools/shared.py")), "# libx\n");
+}
+
+#[test]
+fn two_libraries_of_a_run_never_share_a_folder() {
+    let root = tempfile::tempdir().unwrap();
+    let one = library(root.path(), "one", DEMO_CODE, &[]);
+    let two = library(root.path(), "two", DEMO_CODE, &[]);
+    let project = stm32_project(root.path());
+    let before = listing(&project);
+    let mut asked = request(&project, &[&one, &two]);
+
+    asked.folders = vec![
+        ("one".to_string(), "Libs/both".to_string()),
+        ("two".to_string(), "Libs/both".to_string()),
+    ];
+
+    let (code, ui) = run(offline(), &asked);
+
+    assert_eq!(code, 2, "{}", ui.out());
+    assert!(
+        ui.err().contains("Libs/both is where one is installed"),
+        "{}",
+        ui.err()
+    );
+    assert_eq!(listing(&project), before);
 }

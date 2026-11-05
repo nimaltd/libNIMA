@@ -58,7 +58,17 @@ libnima owner/example
 | Arduino | anywhere, or a sketch's folder | `libnima nimaltd/lib-installer-example-arduino` |
 | PlatformIO | the project's folder, the one holding `platformio.ini` | `libnima nimaltd/lib-installer-example-pio` |
 
-Then build as you always do. An update is the same command again: what you wrote between `USER CODE BEGIN` and `USER CODE END` is kept, and anything else of yours that would be lost is saved as a `.bak` first. `libnima --uninstall example` takes a library out, and gives your project's files back as they were.
+Then build as you always do. An update is the same command again: what you wrote between `USER CODE BEGIN` and `USER CODE END` is kept, and anything else of yours that would be lost is saved as a `.bak` first, a hand edit to the library's README or to a tool it put in `tools/` among them. `libnima --uninstall example` takes a library out, and gives your project's files back as they were.
+
+A file of yours where a library's file would go is never written over: the install stops before writing anything, and names it. Several libraries in one run are each checked before the first is written, so one that cannot go in stops the run with nothing written.
+
+### Where it goes
+
+The question offers the library a folder of its own, such as `modules/example` in a Zephyr application, and `--dir` gives one without the question. The folder is inside your project: not the project's own folder, and not another library's, nor one inside or around it. A library already installed stays in its folder: to move it, take it out with `--uninstall`, then install it again into the new one.
+
+A folder already in your project becomes the library where it stands, and what its repository holds besides the library is removed from it, so your IDE does not build a test suite with it. Its `libnima.yml` stays. A git repository in your project is not installed that way, since its `.git` would go with the rest: install from a copy outside the project, or from GitHub.
+
+A `--project` that is not there is an error, and so is a folder that is no Zephyr application, ESP-IDF project or PlatformIO project, for a library of that platform: nothing is written. An STM32 project whose IDE libNIMA cannot read gets the files, with what to add to your build by hand, and the last line says it is in no build yet.
 
 ### Which platform
 

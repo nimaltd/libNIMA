@@ -273,6 +273,15 @@ pub fn fingerprint(data: &[u8]) -> String {
     short_hash(&outside)
 }
 
+/// What a file holds, the whole of it, as a short hash: for a file copied as it is, such as an extra, which has no sections
+/// of the user's, and whose markers, when it shows some, are only an example. Line endings do not count, as in
+/// fingerprint().
+pub fn whole_fingerprint(data: &[u8]) -> String {
+    let lines: Vec<&[u8]> = byte_lines(data).into_iter().map(trim_byte_ending).collect();
+
+    short_hash(&lines.join(&b'\n'))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

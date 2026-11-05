@@ -17,6 +17,10 @@ west build -b nrf52840dk/nrf52840
 
 To see it work first, take [lib-installer-example-zephyr](https://github.com/nimaltd/lib-installer-example-zephyr), a library made for trying libNIMA on. It builds in any Zephyr application, `native_sim` included, with its settings in Kconfig. Its README walks through an install, a setting changed in `prj.conf`, an option, and an uninstall. nRF Connect SDK applications are Zephyr applications, and install the same way.
 
+Run from a folder whose `CMakeLists.txt` does not find Zephyr, or given a `--project` that is not there, libNIMA stops before writing anything and says so: a library put there would be in no build.
+
+The library goes into `modules/<name>` when you press Enter at the folder question, or into the folder `--dir` gives. That folder is inside your application and its own: not the application's folder itself, and not another library's, nor one inside or around it. A library already installed stays where it is: to move it, take it out with `libnima --uninstall example`, then install it again into the new folder. A file of yours where a library's file would go is never written over: the install stops before anything is written, and names it.
+
 ### What happens
 
 Take `example`, installed into an application called `app`:
@@ -156,7 +160,7 @@ Files
   created socs/nrf54l15_cpuapp.overlay  yours from now on
 ```
 
-From then on it is yours. An update never writes over it, and says so with `kept VERSION  yours`. An uninstall leaves it where it is, with `kept VERSION  yours, not removed`. A library can never put such a file over one libNIMA manages, such as `CMakeLists.txt` or `prj.conf`, nor outside your application's folder.
+From then on it is yours. An update never writes over it, and says so with `kept VERSION  yours`. An uninstall leaves it where it is, with `kept VERSION  yours, not removed`. A library can never put such a file over one libNIMA manages, such as `CMakeLists.txt` or `prj.conf`, nor outside your application's folder, nor into a library's folder, whose next install would replace it.
 
 ### What you see
 
@@ -198,7 +202,7 @@ The hardware a library uses is yours to give it in the devicetree, which libNIMA
 
 Run the same command again. Every file of the library is replaced, so an update updates, and the module's files are written again from the new `libnima.yml`, so a source file the new version adds is built without you editing anything. A file that did not change is left alone, so the build does not configure again for nothing.
 
-What you wrote between `USER CODE BEGIN` and `USER CODE END` in a library's file is kept. Outside those lines, the next install replaces it, and when that would lose something of yours the file is saved beside it first, as a `.bak`.
+What you wrote between `USER CODE BEGIN` and `USER CODE END` in a library's file is kept. Outside those lines, the next install replaces it, and when that would lose something of yours the file is saved beside it first, as a `.bak`. So is an extra you changed by hand, such as the library's `README.md` or a tool it put in `tools/`, which has no such lines.
 
 The record of what is installed, and where, is `.libnima.json` in your application's folder. For each library it also keeps where it came from, down to the commit, the blocks written into your files, and the steps that ran. Keep it in version control with the rest.
 
@@ -210,7 +214,7 @@ libnima --uninstall example
 
 From your application's folder, or with `--project`. Its blocks go from `CMakeLists.txt`, from the Kconfig file that has its block and from `sysbuild.conf`, the module files and the Kconfig fragment libNIMA wrote go from its folder, and then the library's own files. Installed and then uninstalled, `CMakeLists.txt` and `prj.conf` are back to the byte they were. `sysbuild.conf` stays, even when the block was all it held, and so do the [files that became yours](#files-that-become-yours).
 
-What was yours is saved before it goes, as a `.bak` beside it: any file of the library you wrote in between its `USER CODE` lines or changed by hand. A file you put in the library's folder yourself is left where it is, and the folder with it.
+What was yours is saved before it goes, as a `.bak` beside it: any file of the library you wrote in between its `USER CODE` lines or changed by hand, its extras and tools among them. A file you put in the library's folder yourself is left where it is, and the folder with it.
 
 A setting you set yourself, below libNIMA's block, is your line, and it stays. The symbol it sets went with the library, though, and Zephyr stops on a symbol it does not know, so libNIMA names every such line:
 

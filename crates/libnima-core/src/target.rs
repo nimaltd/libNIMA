@@ -124,6 +124,13 @@ pub trait Target {
     fn no_project(&self) -> &'static str;
     fn no_project_hint(&self) -> &'static str;
 
+    /// Why `project_root` is no project of this platform at all, so nothing could add a library to its build, or None. An
+    /// install stops on it before anything is written. Only for what the target can tell for certain: a project laid out in
+    /// a way it cannot read is still a project, and gets the files and what to add by hand.
+    fn not_a_project(&self, _project_root: &Path) -> Option<String> {
+        None
+    }
+
     /// The folder this run works in. `given` is the folder the run was pointed at. A
     /// target whose libraries live somewhere of their own, such as Arduino's libraries
     /// folder, answers with that.

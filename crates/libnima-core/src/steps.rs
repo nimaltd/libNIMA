@@ -8,9 +8,10 @@
 //! exactly what will run and answers, or says so in advance with --run or --yes. Nothing in a manifest can turn the
 //! question off: a library that changed hands on GitHub must not be able to run something unseen on the next install.
 //!
-//! A step whose file is already there is skipped without a question, since the file is what it makes. One with no
-//! such file that ran before, and runs the same thing, is not asked again either: an update is not the moment to make
-//! a second key.
+//! A step whose file is already there is skipped without a question, since the file is what it makes. One that ran
+//! before, and runs the same thing, is not asked again either, whether its file is there or not: an update is not the
+//! moment to make a second key, and a key gone from a fresh clone is one to bring back, not to replace. --run runs it
+//! again.
 
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -225,7 +226,9 @@ pub fn run(
             .and_then(Value::as_str)
             .is_some_and(|fingerprint| fingerprint == step.fingerprint());
 
-        if step.unless.is_none() && ran_before && !choices.turn_on.contains(&step.label) {
+        // Whatever its unless finds: a key made before and gone now is not made again unasked, since a new one would
+        // not be the one the devices in the field know.
+        if ran_before && !choices.turn_on.contains(&step.label) {
             ui.say(vec![
                 label,
                 span(

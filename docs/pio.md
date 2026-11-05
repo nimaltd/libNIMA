@@ -16,6 +16,8 @@ libnima owner/example
 
 To see it work first, take [lib-installer-example-pio](https://github.com/nimaltd/lib-installer-example-pio), a library made for trying libNIMA on. It builds with every framework, and on the native platform too, so you can run it on your computer with no board at all. Its README walks through a setting kept through an update, an option, and an uninstall.
 
+Run from a folder with no `platformio.ini`, it stops before writing anything, since a library put there would be in no build.
+
 ### Where a library goes
 
 Into `lib`, in a folder of its own:
@@ -153,7 +155,7 @@ Files
   created partitions.csv  yours from now on
 ```
 
-From then on it is yours. An update never writes over it, and says so with `kept partitions.csv  yours`. An uninstall leaves it where it is, with `kept partitions.csv  yours, not removed`. A library can never put such a file over `platformio.ini`, nor outside your project's folder.
+From then on it is yours. An update never writes over it, and says so with `kept partitions.csv  yours`. An uninstall leaves it where it is, with `kept partitions.csv  yours, not removed`. A library can never put such a file over `platformio.ini`, nor outside your project's folder, nor into a library's folder, whose next install would replace it.
 
 ### What you see
 
@@ -198,7 +200,7 @@ The record of what is installed, and where, is `.libnima.json`, beside `platform
 libnima --uninstall example
 ```
 
-Its files go, its `library.json`, and its lines in `platformio.ini`. What was yours is saved before it goes, as a `.bak` beside it: a configuration header with your settings in it, or any file of the library you changed by hand. A file you put in the library's folder yourself is left where it is, and the folder with it, and so are the [files that became yours](#files-that-become-yours).
+Its files go, its `library.json`, and its lines in `platformio.ini`. What was yours is saved before it goes, as a `.bak` beside it: a configuration header with your settings in it, or any file of the library you changed by hand, its extras and tools among them. A file you put in the library's folder yourself is left where it is, and the folder with it, and so are the [files that became yours](#files-that-become-yours).
 
 A library another one needs stays, and libNIMA says which needs it. One that came in only because the library needed it stays too, and libNIMA says how to take it out.
 

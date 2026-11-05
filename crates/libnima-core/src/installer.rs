@@ -8,6 +8,10 @@
 //! What the user wrote between USER CODE BEGIN and USER CODE END survives that, carried into the new
 //! file in the section of the same name, the way STM32CubeMX keeps the user's code when it generates
 //! again. See usercode.rs.
+//!
+//! Neither reaches past what is the library's. A file of the user's, or of another library's, where one
+//! of its files would go stops the install before anything is written, and a hand edit that no section
+//! can carry, an extra's among them, is saved beside the file before it is replaced or removed.
 
 use std::fmt;
 use std::fs;
@@ -35,9 +39,10 @@ use crate::usercode;
 /// put in the folder themselves survives.
 ///
 /// LICENSE.md and NOTICE are deliberately absent. The Apache licence requires both to travel with the
-/// code, and the NOTICE file is what carries the author's attribution into the user's product.
-const DEFAULT_CLEANUP: [&str; 15] = [
-    ".git",
+/// code, and the NOTICE file is what carries the author's attribution into the user's product. So are
+/// the library's own file, libnima.yml or installer.yml, which no IDE compiles and which the folder is
+/// installed from again, and .git: a repository is never installed where it stands, see flow.rs.
+const DEFAULT_CLEANUP: [&str; 11] = [
     ".github",
     ".clang-format",
     ".gitignore",
@@ -48,15 +53,13 @@ const DEFAULT_CLEANUP: [&str; 15] = [
     "template",
     "CMakeLists.txt",
     "CONTRIBUTING.md",
-    "libnima.yml",
-    "installer.yml",
-    "library.yml",
     "install.py",
 ];
 
 /// The shape of the record. 2 adds where a library came from, the project's own once files, the blocks
-/// in project files, and the run steps that ran. 3 also says which platform the project is.
-const RECORD_VERSION: i64 = 3;
+/// in project files, and the run steps that ran. 3 also says which platform the project is. 4 also keeps
+/// what each extra held, so a hand edit to one is saved before it goes.
+const RECORD_VERSION: i64 = 4;
 
 /// The install cannot proceed, with a reason worth showing the user.
 #[derive(Debug, Clone, PartialEq)]
@@ -120,12 +123,126 @@ pub struct InstallResult {
     /// What each file written holds outside its USER CODE sections, kept in the record so the next install
     /// can tell a hand edit there.
     pub fingerprints: Vec<(PathBuf, String)>,
+    /// What each extra written holds, the whole of it, since an extra has no sections of the user's: in the
+    /// library's folder and in the project's. Kept in the record for the same reason.
+    pub extras: Vec<(PathBuf, String)>,
 }
 
 impl InstallResult {
     /// True when the user's work was found and kept.
     pub fn was_update(&self) -> bool {
         !self.preserved.is_empty()
+    }
+}
+
+/// One of the other libraries of a project, as far as an install needs to know it: what it holds, which an install never
+/// writes over.
+#[derive(Debug, Clone)]
+pub struct Held {
+    pub name: String,
+    pub folder: Option<PathBuf>,
+    /// Its own files: those in its folder, and those it puts in the project's.
+    pub files: Vec<PathBuf>,
+    /// The project's own files it made once, which are the user's from then on.
+    pub yours: Vec<PathBuf>,
+}
+
+/// The other libraries of a project: those its record has, and those a run is about to install beside it.
+#[derive(Debug, Clone, Default)]
+pub struct Others {
+    pub held: Vec<Held>,
+}
+
+impl Others {
+    /// Every library the project's record has, but `name`.
+    pub fn recorded(project_root: &Path, name: &str) -> Others {
+        let root = paths::resolve(project_root);
+        let held = installed_libraries(&root)
+            .iter()
+            .filter(|(other, entry)| *other != name && entry.is_object())
+            .map(|(other, entry)| {
+                let installed = Installed::read(&root, other, entry);
+
+                Held {
+                    name: other.clone(),
+                    // A record that names the project's own folder as a library's, as one from 1.0.0 can, holds no folder
+                    // of a library that anything could be inside.
+                    folder: installed
+                        .destination
+                        .filter(|folder| !paths::same(folder, &root)),
+                    files: installed
+                        .files
+                        .into_iter()
+                        .chain(installed.placed)
+                        .collect(),
+                    yours: installed.project_files,
+                }
+            })
+            .collect();
+
+        Others { held }
+    }
+
+    /// The library whose folder a path is, or is in.
+    pub fn folder_of(&self, path: &Path) -> Option<&Held> {
+        self.held.iter().find(|held| {
+            held.folder
+                .as_deref()
+                .is_some_and(|folder| paths::same(path, folder) || paths::within(path, folder))
+        })
+    }
+
+    /// The library whose folder is inside a path.
+    pub fn inside(&self, path: &Path) -> Option<&Held> {
+        self.held.iter().find(|held| {
+            held.folder
+                .as_deref()
+                .is_some_and(|folder| paths::within(folder, path))
+        })
+    }
+
+    /// The library a path is a file of.
+    fn owner_of(&self, path: &Path) -> Option<&Held> {
+        self.held
+            .iter()
+            .find(|held| held.files.iter().any(|file| paths::same(file, path)))
+    }
+
+    /// The library that made a path as a file of the project's own, which is the user's.
+    fn maker_of(&self, path: &Path) -> Option<&Held> {
+        self.held
+            .iter()
+            .find(|held| held.yours.iter().any(|file| paths::same(file, path)))
+    }
+}
+
+/// An install checked, with nothing written yet: where its files go, each one known not to be someone else's.
+#[derive(Debug, Clone)]
+pub struct Prepared {
+    pub destination: PathBuf,
+    previous: Option<Value>,
+    /// The library's own files in its folder.
+    pub files: Vec<PathBuf>,
+    /// The once files: the template, and where it lands.
+    once: Vec<(PathBuf, PathBuf)>,
+    /// The extras with a root: the file, and where it lands.
+    placed: Vec<(PathBuf, PathBuf)>,
+}
+
+impl Prepared {
+    /// What the library will hold once it is in, for the next library of a run to be checked against.
+    pub fn held(&self, name: &str) -> Held {
+        Held {
+            name: name.to_string(),
+            folder: Some(self.destination.clone()),
+            files: self
+                .files
+                .iter()
+                .chain(self.placed.iter().map(|(_, found)| found))
+                .cloned()
+                .collect(),
+            yours: self.once.iter().map(|(_, found)| found.clone()).collect(),
+        }
     }
 }
 
@@ -171,12 +288,14 @@ fn strings_of<'a>(entry: &'a Value, key: &str) -> Vec<&'a str> {
 ///
 /// An error, before anything is written, for a file with nowhere to go, or one that would be a file
 /// libNIMA edits or reads as the project's own, or one inside the library's folder, which every install
-/// replaces.
+/// replaces, or inside another library's folder or on a file of another library's, which that library's
+/// install would replace and its uninstall remove.
 fn project_once(
     library: &Manifest,
     project_root: Option<&Path>,
     destination: &Path,
     target: &dyn Target,
+    others: &Others,
 ) -> Result<Vec<(PathBuf, PathBuf)>, InstallError> {
     if library.once.is_empty() {
         return Ok(Vec::new());
@@ -207,11 +326,45 @@ fn project_once(
             )));
         }
 
+        refuse_others(library, to, &found, &root, others)?;
         refuse_managed(library, to, &found, &root, &managed)?;
         placed.push((library.root.join(&entry.source), found));
     }
 
     Ok(placed)
+}
+
+/// A file for the project's folder that would land in another library's folder, or on a file of another library's, is
+/// refused: that library's next install would write over it, and its uninstall would remove it.
+fn refuse_others(
+    library: &Manifest,
+    to: &str,
+    found: &Path,
+    root: &Path,
+    others: &Others,
+) -> Result<(), InstallError> {
+    if let Some(other) = others.folder_of(found) {
+        let folder = other
+            .folder
+            .as_deref()
+            .map(|folder| relative_text(folder, root))
+            .unwrap_or_default();
+
+        return Err(InstallError(format!(
+            "{} would put {to} inside {folder}, the folder of {}, which every install of it replaces. Nothing was \
+             installed.",
+            library.name, other.name
+        )));
+    }
+
+    if let Some(other) = others.owner_of(found) {
+        return Err(InstallError(format!(
+            "{} would put {to} in the project, where {} has a file of its own. Nothing was installed.",
+            library.name, other.name
+        )));
+    }
+
+    Ok(())
 }
 
 /// The folder a library's files for the project land in, or an error saying there is none.
@@ -275,13 +428,15 @@ fn refuse_managed(
 /// Where each extra with a root lands, in the project's folder: (source, target) pairs.
 ///
 /// Checked as once files are, before anything is written. A file already there that the last install did
-/// not put there is the user's, and is never written over: the install stops and says so.
+/// not put there is the user's, and is never written over: the install stops and says so. So is one a
+/// library made as a file of the project's own, which is the user's whether or not it is there yet.
 fn project_placed(
     library: &Manifest,
     project_root: Option<&Path>,
     destination: &Path,
     previous: Option<&Value>,
     target: &dyn Target,
+    others: &Others,
 ) -> Result<Vec<(PathBuf, PathBuf)>, InstallError> {
     if library.placed.is_empty() {
         return Ok(Vec::new());
@@ -319,25 +474,253 @@ fn project_placed(
             )));
         }
 
+        refuse_others(library, to, &found, &root, others)?;
         refuse_managed(library, to, &found, &root, &managed)?;
 
-        if found.is_file()
-            && !ours.iter().any(|path| paths::same(path, &found))
-            && !paths::same(&paths::resolve(&source), &found)
-            && !same_content(&found, &source)
+        let made = others.maker_of(&found);
+
+        if made.is_some()
+            || (found.is_file()
+                && !ours.iter().any(|path| paths::same(path, &found))
+                && !paths::same(&paths::resolve(&source), &found)
+                && !same_content(&found, &source))
         {
-            return Err(InstallError(format!(
-                "{} would write {} in the project, where a file of yours already is. Move it or rename it, then install \
-                 again. Nothing was installed.",
-                library.name,
-                relative_text(&found, &root)
-            )));
+            let shown = relative_text(&found, &root);
+
+            return Err(InstallError(match made {
+                Some(other) if !found.is_file() => format!(
+                    "{} would write {shown} in the project, where {} makes a file of the project's own. Nothing was \
+                     installed.",
+                    library.name, other.name
+                ),
+                _ => format!(
+                    "{} would write {shown} in the project, where a file of yours already is. Move it or rename it, then \
+                     install again. Nothing was installed.",
+                    library.name
+                ),
+            }));
         }
 
         placed.push((source, found));
     }
 
     Ok(placed)
+}
+
+/// Everything an install checks before it writes a thing, so a library that cannot go in leaves no trace: the folder, where
+/// each file lands, that the markers of its code pair, and that no file it would write is someone else's.
+///
+/// A run of several libraries checks each this way before the first is written, with the libraries of the run checked
+/// before it among `others`.
+pub fn prepare(
+    library: &Manifest,
+    destination: &Path,
+    project_root: Option<&Path>,
+    target: &dyn Target,
+    others: &Others,
+) -> Result<Prepared, InstallError> {
+    let destination = paths::resolve(destination);
+
+    if destination.exists() && !destination.is_dir() {
+        return Err(InstallError(format!(
+            "{} is a file, so it cannot hold the library.",
+            destination.display()
+        )));
+    }
+
+    let previous = project_root
+        .and_then(|project_root| previous_of(project_root, &library.name, &destination));
+
+    // Where the project's own once files go, each checked before anything is written, so a manifest that
+    // names a file it must not leaves no trace.
+    let once = project_once(library, project_root, &destination, target, others)?;
+    // The library's own files in the project's folder, checked the same way.
+    let placed = project_placed(
+        library,
+        project_root,
+        &destination,
+        previous.as_ref(),
+        target,
+        others,
+    )?;
+
+    // Every code file is checked before any is written. Markers that do not pair are the library's mistake,
+    // and finding one half way would leave the project with half of each version.
+    for entry in &library.code_files() {
+        let path = library.root.join(&entry.source);
+        let data = fs::read(&path).map_err(|error| io_error(error, "read", &path))?;
+
+        if let Err(error) = usercode::parse(&data) {
+            return Err(InstallError(format!(
+                "{} in {} has USER CODE markers that do not pair, {error}. Nothing was installed.",
+                entry.source, library.name
+            )));
+        }
+    }
+
+    let files = own_files(
+        library,
+        &destination,
+        project_root,
+        previous.as_ref(),
+        others,
+    )?;
+
+    Ok(Prepared {
+        destination,
+        previous,
+        files,
+        once,
+        placed,
+    })
+}
+
+/// The library's own files in its folder, each checked against what is there already.
+///
+/// A file the last install wrote there is the library's, and is replaced. One that holds what the library's does loses
+/// nothing when it is, and becomes the library's. Anything else there is someone else's, and is never written over, as a
+/// file of the user's in the project's folder is not: another library's, or the user's own, such as a copy of the library
+/// they put there by hand.
+fn own_files(
+    library: &Manifest,
+    destination: &Path,
+    project_root: Option<&Path>,
+    previous: Option<&Value>,
+    others: &Others,
+) -> Result<Vec<PathBuf>, InstallError> {
+    let root = project_root.map_or_else(|| destination.to_path_buf(), paths::resolve);
+    let ours: Vec<PathBuf> = previous
+        .map(|previous| {
+            strings_of(previous, "files")
+                .into_iter()
+                .chain(strings_of(previous, "once"))
+                .map(|relative| paths::resolve(&root.join(relative)))
+                .collect()
+        })
+        .unwrap_or_default();
+    let code = library.code_files();
+    let every = code
+        .iter()
+        .map(|entry| (*entry, true))
+        .chain(library.extras.iter().map(|entry| (entry, false)));
+    let mut files = Vec::new();
+
+    for (entry, is_code) in every {
+        let source = paths::resolve(&library.root.join(&entry.source));
+        let found = paths::resolve(&destination.join(&entry.destination));
+
+        files.push(found.clone());
+
+        if !found.is_file()
+            || paths::same(&source, &found)
+            || ours.iter().any(|path| paths::same(path, &found))
+        {
+            continue;
+        }
+
+        let shown = relative_text(&found, &root);
+
+        if let Some(other) = others.owner_of(&found) {
+            return Err(InstallError(format!(
+                "{} would write {shown}, a file of {}'s. Nothing was installed.",
+                library.name, other.name
+            )));
+        }
+
+        if others.maker_of(&found).is_some() || !loses_nothing(&found, &source, is_code) {
+            // An update stays in its folder, so only a first install can go somewhere else.
+            let elsewhere = if previous.is_none() {
+                format!(", or install {} into another folder", library.name)
+            } else {
+                String::new()
+            };
+
+            return Err(InstallError(format!(
+                "{} would write {shown}, where a file of yours already is. Move it or rename it{elsewhere}, then install \
+                 again. Nothing was installed.",
+                library.name
+            )));
+        }
+    }
+
+    Ok(files)
+}
+
+/// Whether writing the library's file over the one there would lose nothing. For code, the same outside the USER CODE
+/// sections, with each section that holds something carried into the new one. For an extra, which is copied as it is, the
+/// same.
+fn loses_nothing(found: &Path, source: &Path, is_code: bool) -> bool {
+    let (Ok(old), Ok(new)) = (fs::read(found), fs::read(source)) else {
+        return false;
+    };
+
+    if !is_code {
+        return usercode::whole_fingerprint(&old) == usercode::whole_fingerprint(&new);
+    }
+
+    usercode::fingerprint(&old) == usercode::fingerprint(&new)
+        && usercode::merge(&new, &old)
+            .is_ok_and(|merged| merged.lost.is_empty() && merged.broken.is_none())
+}
+
+/// Copy an extra into place, as it is, and keep what it holds for the record.
+///
+/// One changed by hand since the last install wrote it is put aside first, since an extra has no sections to carry the
+/// change in. Installing in place, the file already is the library's own, and is left as it is.
+fn write_extra(
+    source: &Path,
+    found: &Path,
+    previous: Option<&Value>,
+    project_root: Option<&Path>,
+    result: &mut InstallResult,
+) -> Result<(), InstallError> {
+    if let Some(parent) = found.parent() {
+        fs::create_dir_all(parent).map_err(|error| io_error(error, "make", parent))?;
+    }
+
+    let data = fs::read(source).map_err(|error| io_error(error, "read", source))?;
+
+    if !paths::same(&paths::resolve(source), &paths::resolve(found)) {
+        let edited = match (previous, project_root) {
+            (Some(previous), Some(project_root)) => edited_extra(found, previous, project_root),
+            _ => None,
+        };
+
+        // Nothing is lost when the hand edit made it what the new version holds anyway.
+        if edited == Some(true)
+            && fs::read(found).is_ok_and(|old| {
+                usercode::whole_fingerprint(&old) != usercode::whole_fingerprint(&data)
+            })
+        {
+            let copy = backup(found).map_err(|error| io_error(error, "copy", found))?;
+
+            result.backups.push(Saved {
+                file: found.to_path_buf(),
+                copy,
+                reason: "it was changed by hand".to_string(),
+            });
+        }
+
+        fs::copy(source, found).map_err(|error| io_error(error, "write", found))?;
+    }
+
+    result
+        .extras
+        .push((found.to_path_buf(), usercode::whole_fingerprint(&data)));
+
+    Ok(())
+}
+
+/// Whether an extra the last install wrote was changed by hand since, or None when the record does not say what it held:
+/// a file of the library's code, or one from a record older than this.
+fn edited_extra(path: &Path, entry: &Value, project_root: &Path) -> Option<bool> {
+    let known = entry
+        .get("extras")?
+        .get(relative_text(path, project_root))?
+        .as_str()?;
+    let data = fs::read(path).ok()?;
+
+    Some(usercode::whole_fingerprint(&data) != known)
 }
 
 /// Copy a library's files into one folder. Each keeps the path it has in the library.
@@ -349,57 +732,29 @@ fn project_placed(
 ///
 /// `project_root` is where the record of what was installed lives. Without it there is no record to read
 /// or write, so no update handling. `record` writes the record at the end; install_in_place() turns this
-/// off, since it records only after its cleanup has run.
+/// off, since it records only after its cleanup has run. `others` is what the project's other libraries
+/// hold, which nothing here writes over: see prepare().
 pub fn install_to(
     library: &Manifest,
     destination: &Path,
     project_root: Option<&Path>,
     target: &dyn Target,
+    others: &Others,
     write_it: bool,
 ) -> Result<InstallResult, InstallError> {
-    let destination = paths::resolve(destination);
-
-    if destination.exists() && !destination.is_dir() {
-        return Err(InstallError(format!(
-            "{} is a file, so it cannot hold the library.",
-            destination.display()
-        )));
-    }
+    let Prepared {
+        destination,
+        previous,
+        once: yours,
+        placed,
+        ..
+    } = prepare(library, destination, project_root, target, others)?;
 
     let mut result = InstallResult {
         destination: destination.clone(),
         ..InstallResult::default()
     };
-
-    let previous = project_root
-        .and_then(|project_root| previous_of(project_root, &library.name, &destination));
-
-    // Where the project's own once files go, each checked before anything is written, so a manifest that
-    // names a file it must not leaves no trace.
-    let yours = project_once(library, project_root, &destination, target)?;
-    // The library's own files in the project's folder, checked the same way.
-    let placed = project_placed(
-        library,
-        project_root,
-        &destination,
-        previous.as_ref(),
-        target,
-    )?;
     let code = library.code_files();
-
-    // Every code file is checked before any is written. Markers that do not pair are the library's mistake,
-    // and finding one half way would leave the project with half of each version.
-    for entry in &code {
-        let path = library.root.join(&entry.source);
-        let data = fs::read(&path).map_err(|error| io_error(error, "read", &path))?;
-
-        if let Err(error) = usercode::parse(&data) {
-            return Err(InstallError(format!(
-                "{} in {} has USER CODE markers that do not pair, {error}. Nothing was installed.",
-                entry.source, library.name
-            )));
-        }
-    }
 
     fs::create_dir_all(&destination).map_err(|error| io_error(error, "make", &destination))?;
 
@@ -441,33 +796,31 @@ pub fn install_to(
 
     // The licence and the NOTICE ride along, because the licence says they must, and anything else the manifest
     // lists comes with them. Copied as they are: they hold no USER CODE of the user's, and a README that shows
-    // the markers in an example must not be read as having sections.
+    // the markers in an example must not be read as having sections. One changed by hand since is put aside first.
     for entry in &library.extras {
         let source = library.root.join(&entry.source);
         let found = destination.join(&entry.destination);
 
-        if let Some(parent) = found.parent() {
-            fs::create_dir_all(parent).map_err(|error| io_error(error, "make", parent))?;
-        }
-
-        if !paths::same(&paths::resolve(&source), &paths::resolve(&found)) {
-            fs::copy(&source, &found).map_err(|error| io_error(error, "write", &found))?;
-        }
-
+        write_extra(
+            &source,
+            &found,
+            previous.as_ref(),
+            project_root,
+            &mut result,
+        )?;
         result.installed.push(found);
     }
 
     // Extras with a root: the library's own files, such as its tools, in the project's folder. Written again on
     // every install, as every extra is.
     for (source, found) in placed {
-        if let Some(parent) = found.parent() {
-            fs::create_dir_all(parent).map_err(|error| io_error(error, "make", parent))?;
-        }
-
-        if !paths::same(&paths::resolve(&source), &found) {
-            fs::copy(&source, &found).map_err(|error| io_error(error, "write", &found))?;
-        }
-
+        write_extra(
+            &source,
+            &found,
+            previous.as_ref(),
+            project_root,
+            &mut result,
+        )?;
         result.placed.push(found);
     }
 
@@ -489,17 +842,19 @@ pub fn install_to(
 /// Turn a downloaded repository into a usable library folder, where it sits.
 ///
 /// Used when someone drops the whole repository into their project. The repository scaffolding is removed,
-/// leaving a folder that holds only what the firmware needs.
+/// leaving a folder that holds only what the firmware needs, and the library's own file it is installed from.
 pub fn install_in_place(
     library: &Manifest,
     project_root: &Path,
     target: &dyn Target,
+    others: &Others,
 ) -> Result<InstallResult, InstallError> {
     let mut result = install_to(
         library,
         &library.root.clone(),
         Some(project_root),
         target,
+        others,
         false,
     )?;
 
@@ -682,6 +1037,11 @@ fn losses(
 
 /// Whether a file about to be removed has something of the user's in it.
 fn holds_user_work(path: &Path, previous: &Value, project_root: &Path) -> bool {
+    // An extra has no sections of the user's, so all there is to tell is a hand edit.
+    if let Some(edited) = edited_extra(path, previous, project_root) {
+        return edited;
+    }
+
     let Ok(data) = fs::read(path) else {
         return false;
     };
@@ -765,6 +1125,7 @@ fn drop_stale(
 
 /// Remove the extras with a root that the last install put in the project's folder and this one did not, such
 /// as a tool the library no longer ships. Only files the record lists as placed, and only inside the project.
+/// One changed by hand since is put aside first.
 fn drop_stale_placed(previous: &Value, project_root: &Path, result: &mut InstallResult) {
     let root = paths::resolve(project_root);
     let current: Vec<PathBuf> = result
@@ -782,6 +1143,17 @@ fn drop_stale_placed(previous: &Value, project_root: &Path, result: &mut Install
             || !old.is_file()
         {
             continue;
+        }
+
+        if edited_extra(&old, previous, project_root) == Some(true) {
+            match backup(&old) {
+                Ok(copy) => result.backups.push(Saved {
+                    file: old.clone(),
+                    copy,
+                    reason: "no longer part of the library, and it held your changes".to_string(),
+                }),
+                Err(_) => continue,
+            }
         }
 
         if unlink(&old).is_err() {
@@ -958,6 +1330,12 @@ fn record_install(
         fingerprints.insert(relative_text(path, project_root), json!(value));
     }
 
+    let mut extras = Map::new();
+
+    for (path, value) in &result.extras {
+        extras.insert(relative_text(path, project_root), json!(value));
+    }
+
     let mut yours = result.yours_created.clone();
     yours.extend(result.yours_kept.iter().cloned());
 
@@ -999,6 +1377,9 @@ fn record_install(
             "blocks": kept("blocks"),
             "ran": kept("ran"),
             "fingerprints": fingerprints,
+            // What each extra held as it was written, the whole of it, in the library's folder and in the project's,
+            // so an install or an uninstall can tell a hand edit and save it first.
+            "extras": extras,
             "defines": library.defines,
             // The libraries this one needs, so an uninstall can refuse to take one out from under another, and say
             // which are no longer needed.
@@ -1203,8 +1584,13 @@ pub fn uninstall(
         unneeded: Vec::new(),
     };
 
+    // What another library's record has as its own, or as the user's, is not this one's to take, whatever this one's
+    // record says.
+    let held = Others::recorded(&root, name);
+    let claimed = |path: &Path| held.owner_of(path).is_some() || held.maker_of(path).is_some();
+
     for path in library.files.iter().chain(&library.once) {
-        if !path.is_file() {
+        if !path.is_file() || claimed(path) {
             continue;
         }
 
@@ -1237,9 +1623,24 @@ pub fn uninstall(
     }
 
     // The library's own files in the project's folder go with it, as those in its own folder do: they were written
-    // again on every install.
+    // again on every install. One changed by hand since is put aside first.
     for path in &library.placed {
-        if !path.is_file() || unlink(path).is_err() {
+        if !path.is_file() || claimed(path) {
+            continue;
+        }
+
+        if edited_extra(path, entry, &root) == Some(true) {
+            match backup(path) {
+                Ok(copy) => removal.backups.push(Saved {
+                    file: path.clone(),
+                    copy,
+                    reason: "it was changed by hand".to_string(),
+                }),
+                Err(_) => continue,
+            }
+        }
+
+        if unlink(path).is_err() {
             continue;
         }
 
@@ -1291,9 +1692,13 @@ pub fn uninstall(
 
 /// Why a library file is saved before an uninstall removes it, or None.
 ///
-/// Only the library's code is asked. An extra, a README for one, is copied as it is and has no fingerprint in the
-/// record, and one that shows USER CODE lines as an example must not be taken for the user's work.
+/// The library's code is asked about its sections. An extra, a README for one, is copied as it is, so it is asked only
+/// whether it was changed by hand: one that shows USER CODE lines as an example must not be taken for the user's work.
 fn what_is_yours(path: &Path, entry: &Value, project_root: &Path) -> Option<String> {
+    if let Some(edited) = edited_extra(path, entry, project_root) {
+        return edited.then(|| "it was changed by hand".to_string());
+    }
+
     let relative = relative_text(path, project_root);
     let known = entry.get("fingerprints")?.get(&relative)?;
     let data = fs::read(path).ok()?;

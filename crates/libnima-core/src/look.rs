@@ -428,13 +428,25 @@ fn look_with(
         .clone()
         .unwrap_or_else(|| session.project_root.clone());
     let findings = session.check_library(&library, &root);
-    let mark = mark_of(&findings);
+    let place = session.default_folder(&library, &root);
+    // What the install would refuse before writing a thing, in the folder it offers, is a NO with the reason beside it.
+    let refused = session
+        .checked(
+            &source,
+            &session.folder_to_check(&source, Some(place.clone())),
+            &[],
+        )
+        .err();
+    let mark = if refused.is_some() {
+        Mark::No
+    } else {
+        mark_of(&findings)
+    };
     let have = installed_libraries(&root);
     let entry = have.get(&library.name);
     let on: Vec<String> = entry
         .map(|entry| library_of(&library.name, entry).options)
         .unwrap_or_default();
-    let place = session.default_folder(&library, &root);
     let destination = root.join(&place);
 
     // What it needs may be kept somewhere else, as Arduino's libraries folder is.
@@ -445,11 +457,13 @@ fn look_with(
     Some(Looked {
         given: given.to_string(),
         mark,
-        why: findings
-            .iter()
-            .find(|finding| finding.level == Level::Warn)
-            .map(|finding| finding.message.clone())
-            .unwrap_or_default(),
+        why: refused.unwrap_or_else(|| {
+            findings
+                .iter()
+                .find(|finding| finding.level == Level::Warn)
+                .map(|finding| finding.message.clone())
+                .unwrap_or_default()
+        }),
         name: library.name.clone(),
         version: library.version.clone(),
         description: library.description.clone(),
@@ -566,6 +580,10 @@ fn copy_project(from: &Path, to: &Path) -> std::io::Result<()> {
         if kind.is_dir() {
             if !LEFT_OUT.contains(&name.to_string_lossy().as_ref()) {
                 copy_project(&entry.path(), &to.join(&name))?;
+            } else if name == ".git" {
+                // What a repository holds is left out, but not that the folder is one: a repository in the project is
+                // not installed where it stands, and the preview says so as the install would.
+                fs::create_dir_all(to.join(&name))?;
             }
         } else if kind.is_file() && entry.metadata()?.len() <= LARGEST_COPIED {
             fs::copy(entry.path(), to.join(&name))?;

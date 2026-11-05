@@ -215,7 +215,49 @@ fn an_existing_folder_wins_over_a_library_name() {
 
     assert_eq!(code(&done), 0, "{}", err(&done));
     assert!(folder.join("demo/inc/demo.h").is_file());
-    assert!(!folder.join("demo/libnima.yml").exists());
+    // The library where it stands, which keeps the file it is installed from.
+    assert!(folder.join("demo/libnima.yml").is_file());
+    assert_eq!(
+        libnima_core::record::installed_libraries(&folder)["demo"]["folder"],
+        "demo"
+    );
+}
+
+#[test]
+fn a_project_that_does_not_exist_is_not_made() {
+    // A typo in --project, which would otherwise get a folder of its own and a library no build will ever find.
+    let root = tempfile::tempdir().unwrap();
+    let source = library(root.path(), "demo", "stm32", "");
+    let typo = root.path().join("Porj/deeper");
+
+    for check in [false, true] {
+        let mut args = vec![text(&source), "--project", text(&typo), "--yes"];
+
+        if check {
+            args.push("--check");
+        }
+
+        let done = libnima(root.path(), &args);
+
+        assert_eq!(code(&done), 2, "{}", out(&done));
+        assert!(
+            err(&done).contains("given with --project, does not exist."),
+            "{}",
+            err(&done)
+        );
+        assert!(!root.path().join("Porj").exists());
+    }
+
+    // A file is no project either.
+    let file = root.path().join("notes.txt");
+
+    fs::write(&file, "mine\n").unwrap();
+
+    let done = libnima(root.path(), &[text(&source), "--project", text(&file)]);
+
+    assert_eq!(code(&done), 2, "{}", out(&done));
+    assert!(err(&done).contains("is a file"), "{}", err(&done));
+    assert_eq!(fs::read_to_string(&file).unwrap(), "mine\n");
 }
 
 #[test]

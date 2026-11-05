@@ -118,7 +118,7 @@ impl Target for Stm32 {
     }
 
     fn folder_for(&self, library: &Manifest, _project_root: &Path) -> String {
-        library.name.clone()
+        super::default_folder(Platform::Stm32, &library.name)
     }
 
     /// The project's files this edits or reads as its own, which a once file must never

@@ -354,16 +354,33 @@ fn a_file_the_new_version_drops_with_the_users_work_in_it_is_saved() {
 }
 
 #[test]
-fn installing_into_another_folder_leaves_the_first_copy_alone() {
+fn installing_into_another_folder_is_refused_and_says_how_to_move_it() {
+    // Into another folder, the first copy would stay behind, out of the record, out of the build and never uninstalled.
     let root = tempfile::tempdir().unwrap();
     let lib = library(root.path(), "demo", DEMO_CODE, &[]);
     let other = version(root.path(), "v2", "demo", "headers: [inc/demo.h]\n", &[]);
     let project = stm32_project(root.path());
 
     installed(&project, &lib, "demo");
-    installed(&project, &other, "Libs/demo");
 
+    let record_before = read(project.join(".libnima.json"));
+    let (code, ui) = install(&project, &other, "./Libs/../Libs/demo");
+
+    assert_eq!(code, 2, "{}", ui.out());
+    assert!(
+        ui.err().contains("demo is installed in demo")
+            && ui.err().contains("libnima --uninstall demo"),
+        "{}",
+        ui.err()
+    );
+    assert!(!project.join("Libs").exists());
     assert!(project.join("demo/src/demo.c").is_file());
+    assert_eq!(read(project.join(".libnima.json")), record_before);
+
+    // The same folder, however it is written, is an update.
+    installed(&project, &other, "./demo/");
+
+    assert!(!project.join("demo/src/demo.c").exists());
 }
 
 #[test]
@@ -616,7 +633,8 @@ fn in_place_removes_the_repository_scaffolding() {
     assert!(!folder.join("test").exists());
     assert!(!folder.join(".github").exists());
     assert!(!folder.join("CMakeLists.txt").exists());
-    assert!(!folder.join("libnima.yml").exists());
+    // No IDE compiles it, and it is what the folder is installed from again.
+    assert!(folder.join("libnima.yml").is_file());
     assert!(folder.join("LICENSE.md").is_file());
     assert!(folder.join("NOTICE").is_file());
     assert!(
@@ -665,7 +683,51 @@ fn folders_the_files_stay_in_survive_the_cleanup() {
     assert!(folder.join("src/demo.c").is_file());
     assert!(folder.join("src/port/spi.c").is_file());
     assert!(!folder.join("test").exists());
-    assert!(!folder.join("libnima.yml").exists());
+    assert!(folder.join("libnima.yml").is_file());
+}
+
+#[test]
+fn a_git_repository_in_the_project_is_never_installed_where_it_stands() {
+    // A clone kept in the project: in place, its .git, and every commit not pushed yet, would go with the scaffolding.
+    let root = tempfile::tempdir().unwrap();
+    let project = stm32_project(root.path());
+    let folder = library(
+        &project,
+        "demo",
+        DEMO_CODE,
+        &[
+            (".git/HEAD", "ref: refs/heads/main\n"),
+            (".github/ci.yml", "on: push\n"),
+            ("installer.yml", "name: demo\n"),
+            ("test/test_demo.c", "int main(void){return 0;}\n"),
+        ],
+    );
+    let before = libnima_core::paths::files_below(&project);
+
+    let (code, ui) = run_with(
+        Github::serving(&[]).client(),
+        &request(&project, &[&folder]),
+    );
+
+    assert_eq!(code, 2, "{}", ui.out());
+    assert!(
+        ui.err().contains("demo is a git repository")
+            && ui.err().contains("Install from a copy outside the project"),
+        "{}",
+        ui.err()
+    );
+    assert_eq!(libnima_core::paths::files_below(&project), before);
+
+    // Run from inside the repository itself, as libnima . there, which makes its parent the project.
+    let (code, ui) = run_with(Github::serving(&[]).client(), &request(&folder, &[&folder]));
+
+    assert_eq!(code, 2, "{}", ui.out());
+    assert!(
+        ui.err().contains("demo is a git repository"),
+        "{}",
+        ui.err()
+    );
+    assert_eq!(libnima_core::paths::files_below(&project), before);
 }
 
 #[test]
@@ -694,7 +756,7 @@ fn an_option_not_taken_goes_from_a_folder_in_place() {
 }
 
 #[test]
-fn a_folder_installed_once_already_says_so() {
+fn a_folder_installed_in_place_keeps_its_file_and_goes_in_again() {
     let root = tempfile::tempdir().unwrap();
     let project = stm32_project(root.path());
     let folder = library(&project, "demo", DEMO_CODE, &[]);
@@ -707,8 +769,21 @@ fn a_folder_installed_once_already_says_so() {
         "{}",
         ui.err()
     );
+    assert_eq!(read(folder.join("libnima.yml")), manifest);
 
-    // The file that says which platform is gone now, so the next run is told it. The record still knows the folder.
+    // Again, as an update where it stands.
+    let mut ui = Watched::default();
+    assert_eq!(
+        flow::run(&request(&project, &[&folder]), &mut ui),
+        0,
+        "{}",
+        ui.err()
+    );
+    assert_eq!(record(&project)["demo"]["folder"], "demo");
+
+    // libNIMA 1.0.0 removed the file. Without it, the next run is told so, and the record still knows the folder.
+    fs::remove_file(folder.join("libnima.yml")).unwrap();
+
     let mut again = request(&project, &[&folder]);
     again.platform = Some(libnima_core::platform::Platform::Stm32);
 
@@ -721,8 +796,7 @@ fn a_folder_installed_once_already_says_so() {
         "{}",
         ui.err()
     );
-
-    let _ = manifest;
+    assert_eq!(record(&project)["demo"]["folder"], "demo");
 }
 
 // ----------------------------------------------------------------------------
@@ -1532,12 +1606,23 @@ fn a_readme_that_shows_the_markers_installs_and_is_copied_as_it_is() {
     );
 
     installed(&project, &lib, "demo");
+
+    // Installed again as it is, nothing of it is taken for the user's.
+    let ui = installed(&project, &lib, "demo");
+
+    assert!(backups(&project.join("demo"), "README.md").is_empty());
+    assert!(!ui.out().contains("your USER CODE"), "{}", ui.out());
+
+    // A hand edit is copied over as it is, and saved first.
     write(project.join("demo/README.md"), "my notes\n");
 
     let ui = installed(&project, &lib, "demo");
+    let saved = backups(&project.join("demo"), "README.md");
 
     assert_eq!(read(project.join("demo/README.md")), readme);
-    assert!(backups(&project.join("demo"), "README.md").is_empty());
+    assert_eq!(saved.len(), 1);
+    assert_eq!(read(&saved[0]), "my notes\n");
+    assert!(ui.out().contains("it was changed by hand"), "{}", ui.out());
     assert!(!ui.out().contains("your USER CODE"), "{}", ui.out());
 }
 
@@ -1699,4 +1784,355 @@ fn a_once_files_to_is_its_place_in_the_project() {
     assert_eq!(read(project.join("CHANGELOG.md")), "# Changelog\n");
     assert!(!project.join("templates").exists());
     assert!(!project.join("demo/CHANGELOG.md").exists());
+}
+
+// ----------------------------------------------------------------------------
+// What is not the library's to write over
+// ----------------------------------------------------------------------------
+
+#[test]
+fn a_file_of_the_users_where_a_library_file_goes_is_never_written_over() {
+    // A copy of the library put in the project by hand, and changed, before libNIMA was ever run there.
+    let root = tempfile::tempdir().unwrap();
+    let lib = library(root.path(), "demo", DEMO_CODE, &[]);
+    let project = stm32_project(root.path());
+    write(project.join("demo/src/demo.c"), "/* mine, changed */\n");
+
+    let before = libnima_core::paths::files_below(&project);
+    let (code, ui) = install(&project, &lib, "demo");
+
+    assert_eq!(code, 2, "{}", ui.out());
+    assert!(
+        ui.err()
+            .contains("demo would write demo/src/demo.c, where a file of yours already is"),
+        "{}",
+        ui.err()
+    );
+    assert!(
+        ui.err().contains("or install demo into another folder"),
+        "{}",
+        ui.err()
+    );
+    assert_eq!(libnima_core::paths::files_below(&project), before);
+
+    // --check says so before anything is tried.
+    let mut checked = request(&project, &[&lib]);
+    checked.folder = Some("demo".to_string());
+    checked.check_only = true;
+
+    let (code, ui) = run_with(Github::serving(&[]).client(), &checked);
+
+    assert_eq!(code, 1, "{}", ui.out());
+    assert!(ui.out().contains("NO"), "{}", ui.out());
+
+    // A copy that holds what the library's does loses nothing, and becomes the library's.
+    write(project.join("demo/src/demo.c"), "/* source */\n");
+    installed(&project, &lib, "demo");
+
+    assert!(strings(&record(&project)["demo"]["files"]).contains(&"demo/src/demo.c".to_string()));
+}
+
+#[test]
+fn an_update_never_writes_over_a_file_of_the_users_it_brings_in() {
+    let root = tempfile::tempdir().unwrap();
+    let first = version(root.path(), "v1", "demo", DEMO_CODE, &[]);
+    let second = version(
+        root.path(),
+        "v2",
+        "demo",
+        "headers: [inc/demo.h]\nsources: [src/demo.c, src/extra.c]\n",
+        &[("src/extra.c", "/* the library's */\n")],
+    );
+    let project = stm32_project(root.path());
+
+    installed(&project, &first, "demo");
+    write(project.join("demo/src/extra.c"), "/* mine */\n");
+
+    let (code, ui) = install(&project, &second, "demo");
+
+    assert_eq!(code, 2, "{}", ui.out());
+    assert!(
+        ui.err().contains(
+            "demo would write demo/src/extra.c, where a file of yours already is. Move it or rename it, then install \
+             again."
+        ),
+        "{}",
+        ui.err()
+    );
+    assert_eq!(read(project.join("demo/src/extra.c")), "/* mine */\n");
+    assert!(!strings(&record(&project)["demo"]["files"]).contains(&"demo/src/extra.c".to_string()));
+
+    // An uninstall takes only what the record has as the library's.
+    assert_eq!(uninstall(&project, &["demo"]).0, 0);
+    assert_eq!(read(project.join("demo/src/extra.c")), "/* mine */\n");
+}
+
+#[test]
+fn a_hand_edit_to_an_extra_is_saved_before_it_is_written_over_or_removed() {
+    let root = tempfile::tempdir().unwrap();
+    let first = version(
+        root.path(),
+        "v1",
+        "demo",
+        &format!("{DEMO_CODE}extras:\n  - README.md\n  - root: tools\n"),
+        &[
+            ("README.md", "readme\n"),
+            ("tools/a.py", "a\n"),
+            ("tools/b.py", "b\n"),
+        ],
+    );
+    let second = version(
+        root.path(),
+        "v2",
+        "demo",
+        &format!("{DEMO_CODE}extras:\n  - root: tools/a.py\n"),
+        &[("tools/a.py", "a\n")],
+    );
+    let project = stm32_project(root.path());
+
+    installed(&project, &first, "demo");
+
+    // Installed again, an extra as it was written is replaced as it is, and one changed by hand is saved first.
+    write(project.join("tools/a.py"), "a, mine\n");
+
+    let ui = installed(&project, &first, "demo");
+
+    assert_eq!(read(project.join("tools/a.py")), "a\n");
+    assert_eq!(
+        read(&backups(&project.join("tools"), "a.py")[0]),
+        "a, mine\n"
+    );
+    assert!(backups(&project.join("tools"), "b.py").is_empty());
+    assert!(ui.out().contains("it was changed by hand"), "{}", ui.out());
+
+    // An update that drops them saves each one changed by hand before it goes.
+    write(project.join("demo/README.md"), "readme, mine\n");
+    write(project.join("tools/b.py"), "b, mine\n");
+
+    let ui = installed(&project, &second, "demo");
+
+    assert!(!project.join("demo/README.md").exists());
+    assert!(!project.join("tools/b.py").exists());
+    assert_eq!(
+        read(&backups(&project.join("demo"), "README.md")[0]),
+        "readme, mine\n"
+    );
+    assert_eq!(
+        read(&backups(&project.join("tools"), "b.py")[0]),
+        "b, mine\n"
+    );
+    assert!(
+        ui.out()
+            .contains("no longer part of the library, and it held your changes"),
+        "{}",
+        ui.out()
+    );
+
+    // So does an uninstall.
+    write(project.join("tools/a.py"), "a, mine again\n");
+
+    let (code, ui) = uninstall(&project, &["demo"]);
+
+    assert_eq!(code, 0, "{}", ui.err());
+    assert!(!project.join("tools/a.py").exists());
+    assert!(
+        backups(&project.join("tools"), "a.py")
+            .iter()
+            .any(|copy| read(copy) == "a, mine again\n")
+    );
+    assert!(ui.out().contains("it was changed by hand"), "{}", ui.out());
+}
+
+#[test]
+fn a_folder_outside_the_project_or_the_project_itself_is_refused() {
+    let root = tempfile::tempdir().unwrap();
+    let lib = library(root.path(), "demo", DEMO_CODE, &[]);
+    let project = stm32_project(root.path());
+    let outside = root.path().join("outside");
+    let before = libnima_core::paths::files_below(root.path());
+
+    for folder in [
+        "../outside",
+        "Libs/../../outside",
+        outside.to_str().unwrap(),
+    ] {
+        let (code, ui) = install(&project, &lib, folder);
+
+        assert_eq!(code, 2, "{folder}: {}", ui.out());
+        assert!(
+            ui.err()
+                .contains(&format!("The folder {folder} is outside the project")),
+            "{}",
+            ui.err()
+        );
+    }
+
+    for folder in [".", "./", "Libs/.."] {
+        let (code, ui) = install(&project, &lib, folder);
+
+        assert_eq!(code, 2, "{folder}: {}", ui.out());
+        assert!(
+            ui.err()
+                .contains(&format!("The folder {folder} is the project's own")),
+            "{}",
+            ui.err()
+        );
+    }
+
+    assert_eq!(libnima_core::paths::files_below(root.path()), before);
+
+    // Inside, however it is written, it is a folder of the project's, and the record names it from there.
+    installed(&project, &lib, "./Libs/../Libs/demo");
+
+    assert_eq!(record(&project)["demo"]["folder"], "Libs/demo");
+}
+
+#[test]
+fn another_librarys_folder_is_never_given_to_a_library() {
+    let root = tempfile::tempdir().unwrap();
+    let demo = library(root.path(), "demo", DEMO_CODE, &[]);
+    let osal = library(root.path(), "osal", DEMO_CODE, &[]);
+    let project = stm32_project(root.path());
+
+    installed(&project, &demo, "Libs/demo");
+
+    let before = libnima_core::paths::files_below(&project);
+
+    for (folder, said) in [
+        ("Libs/demo", "Libs/demo is where demo is installed"),
+        (
+            "Libs/demo/osal",
+            "Libs/demo/osal is inside Libs/demo, the folder of demo",
+        ),
+        ("Libs", "Libs holds Libs/demo, the folder of demo"),
+    ] {
+        let (code, ui) = install(&project, &osal, folder);
+
+        assert_eq!(code, 2, "{folder}: {}", ui.out());
+        assert!(ui.err().contains(said), "{}", ui.err());
+    }
+
+    assert_eq!(libnima_core::paths::files_below(&project), before);
+}
+
+#[test]
+fn a_once_file_never_lands_in_another_librarys_folder() {
+    let root = tempfile::tempdir().unwrap();
+    let liba = library(root.path(), "liba", DEMO_CODE, &[]);
+    let libf = library(
+        root.path(),
+        "libf",
+        "headers: [inc/f.h]\nonce:\n  - from: templates/x.h\n    to: liba/inc/demo.h\n",
+        &[("inc/f.h", ""), ("templates/x.h", "/* the template */\n")],
+    );
+    let project = stm32_project(root.path());
+
+    installed(&project, &liba, "liba");
+
+    let before = libnima_core::paths::files_below(&project);
+    let (code, ui) = install(&project, &libf, "libf");
+
+    assert_eq!(code, 2, "{}", ui.out());
+    assert!(
+        ui.err()
+            .contains("libf would put liba/inc/demo.h inside liba, the folder of liba"),
+        "{}",
+        ui.err()
+    );
+    assert_eq!(libnima_core::paths::files_below(&project), before);
+}
+
+#[test]
+fn a_file_made_as_the_users_is_never_written_over_or_removed_by_another_library() {
+    let root = tempfile::tempdir().unwrap();
+    let liba = library(root.path(), "liba", DEMO_CODE, &[]);
+    let libf = library(
+        root.path(),
+        "libf",
+        "headers: [inc/f.h]\nonce:\n  - from: templates/x.h\n    to: liba/inc/demo.h\n",
+        &[("inc/f.h", ""), ("templates/x.h", "/* the template */\n")],
+    );
+    let project = stm32_project(root.path());
+
+    // libf first, while liba is not in the project: the file is the user's from then on, and the user writes in it.
+    installed(&project, &libf, "libf");
+    write(project.join("liba/inc/demo.h"), "/* mine */\n");
+
+    let (code, ui) = install(&project, &liba, "liba");
+
+    assert_eq!(code, 2, "{}", ui.out());
+    assert!(
+        ui.err()
+            .contains("liba would write liba/inc/demo.h, where a file of yours already is"),
+        "{}",
+        ui.err()
+    );
+    assert_eq!(read(project.join("liba/inc/demo.h")), "/* mine */\n");
+
+    // A record that has it as both, as one from 1.0.0 can: the uninstall of the library leaves the user's file.
+    let other = stm32_project(&root.path().join("other"));
+
+    installed(&other, &liba, "liba");
+
+    let path = other.join(".libnima.json");
+    let mut data: serde_json::Value = serde_json::from_str(&read(&path)).unwrap();
+    data["libraries"]["libf"] = serde_json::json!({
+        "version": "",
+        "folder": "libf",
+        "files": [],
+        "placed": [],
+        "project_files": ["liba/inc/demo.h"]
+    });
+    fs::write(&path, data.to_string()).unwrap();
+
+    assert_eq!(uninstall(&other, &["liba"]).0, 0);
+    assert!(other.join("liba/inc/demo.h").is_file());
+    assert!(!other.join("liba/src/demo.c").exists());
+}
+
+#[test]
+fn a_project_that_does_not_exist_is_not_made() {
+    let root = tempfile::tempdir().unwrap();
+    let lib = library(root.path(), "demo", DEMO_CODE, &[]);
+    let typo = root.path().join("Porj/deeper");
+    let (code, ui) = install(&typo, &lib, "demo");
+
+    assert_eq!(code, 2, "{}", ui.out());
+    assert!(ui.err().contains("does not exist"), "{}", ui.err());
+    assert!(!root.path().join("Porj").exists());
+}
+
+#[test]
+fn a_library_no_build_has_is_not_said_to_be_done() {
+    let root = tempfile::tempdir().unwrap();
+    let lib = library(root.path(), "demo", DEMO_CODE, &[]);
+
+    // No IDE project libNIMA can read: the files go in, and what to add by hand is said, last of all as well.
+    let bare = stm32_project(root.path());
+    let ui = installed(&bare, &lib, "demo");
+
+    assert!(
+        ui.out().contains(
+            "Installed, and in no build yet: add it as said above, then #include \"demo.h\"."
+        ),
+        "{}",
+        ui.out()
+    );
+    assert!(!ui.out().contains("Done."), "{}", ui.out());
+
+    let built = project_with(
+        &root.path().join("cmake"),
+        Ides {
+            cmake: true,
+            ..Ides::default()
+        },
+    );
+    let ui = installed(&built, &lib, "demo");
+
+    assert!(
+        ui.out()
+            .contains("Done. #include \"demo.h\" and you are away."),
+        "{}",
+        ui.out()
+    );
 }

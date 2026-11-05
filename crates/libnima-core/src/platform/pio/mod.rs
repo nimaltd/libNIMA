@@ -26,7 +26,7 @@ use crate::text::given_twice;
 use crate::titles::{self, Listed};
 use crate::yaml::{Mapping, Node, Value};
 
-const LIB: &str = "lib";
+pub(crate) const LIB: &str = "lib";
 
 /// The keys of the pio section, and of its two parts: what each writes, and into which file.
 const KEYS: [&str; 2] = ["project", "library"];
@@ -303,9 +303,21 @@ impl Target for PlatformIO {
         "Run this from your project's folder, the one holding platformio.ini."
     }
 
+    /// A project is a folder with platformio.ini. Without one, nothing would build the library.
+    fn not_a_project(&self, project_root: &Path) -> Option<String> {
+        (!project_root.join(ini::NAME).is_file()).then(|| {
+            format!(
+                "{} is not a PlatformIO project: it has no {name}. Run this from your project's folder, the one holding \
+                 {name}, or give it with --project. Nothing was installed.",
+                paths::posix(project_root),
+                name = ini::NAME
+            )
+        })
+    }
+
     /// Libraries go into lib/, which PlatformIO searches for every framework.
     fn folder_for(&self, library: &Manifest, _project_root: &Path) -> String {
-        format!("{LIB}/{}", library.name)
+        super::default_folder(Platform::Pio, &library.name)
     }
 
     /// platformio.ini, which this edits, and which a once file must never be.

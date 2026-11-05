@@ -778,7 +778,61 @@ fn a_zip_with_the_old_name_is_found() {
 }
 
 #[test]
-fn installing_in_place_removes_either_name() {
+fn a_once_file_in_a_librarys_folder_is_refused_with_no_project() {
+    // A file of the project's own, made once, cannot be one that a library's next install replaces. With no project, the
+    // folders known are the one this library goes into and those of the libraries it names.
+    let root = tempfile::tempdir().unwrap();
+    let lib = root.path().join("libf");
+    let named = "name: libf\nplatform: zephyr\nrequires:\n  libraries:\n    - liba\nheaders: [src/libf.h]\nonce:\n  - from: templates/x.h\n    to: modules/liba/src/liba.h\n";
+
+    put(
+        &lib,
+        &[
+            ("src/libf.h", ""),
+            ("templates/x.h", ""),
+            ("libnima.yml", named),
+        ],
+    );
+
+    let (_, problems) = check::lint(&lib).unwrap();
+
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert!(!problems[0].warning);
+    assert!(
+        problems[0]
+            .message
+            .contains("once puts modules/liba/src/liba.h inside modules/liba, where liba goes"),
+        "{}",
+        problems[0].message
+    );
+
+    fs::write(
+        lib.join("libnima.yml"),
+        "name: libf\nplatform: zephyr\nheaders: [src/libf.h]\nonce:\n  - from: templates/x.h\n    to: modules/libf/x.h\n",
+    )
+    .unwrap();
+
+    let (_, problems) = check::lint(&lib).unwrap();
+
+    assert!(
+        problems[0]
+            .message
+            .contains("once puts modules/libf/x.h inside its own folder, modules/libf"),
+        "{problems:?}"
+    );
+
+    // Anywhere else in the project is the project's own.
+    fs::write(
+        lib.join("libnima.yml"),
+        "name: libf\nplatform: zephyr\nheaders: [src/libf.h]\nonce:\n  - from: templates/x.h\n    to: modules/x.h\n",
+    )
+    .unwrap();
+
+    assert!(check::lint(&lib).unwrap().1.is_empty());
+}
+
+#[test]
+fn installing_in_place_keeps_either_name() {
     for name in ["libnima.yml", "installer.yml"] {
         let root = tempfile::tempdir().unwrap();
         let project = stm32_project(root.path());
@@ -799,7 +853,7 @@ fn installing_in_place_removes_either_name() {
         let (code, ui) = run_with(Github::serving(&[]).client(), &request(&project, &[&lib]));
 
         assert_eq!(code, 0, "{name}: {}", ui.err());
-        assert!(!lib.join(name).exists(), "{name} is still there");
+        assert!(lib.join(name).is_file(), "{name} was removed");
         assert!(lib.join("inc/demo.h").is_file());
     }
 }

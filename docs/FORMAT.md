@@ -143,6 +143,11 @@ that path. A plain path under `headers`, `sources` or `extras` can also be a fol
 No path may climb out of the library, or of the folder it lands in, however it is spelt. `{library}` names the folder the
 library was installed in, wherever it was put, in a step's command, `unless` and a platform's CMake lines.
 
+A `once` file cannot land in a library's folder, which every install of that library replaces: not in the folder this library
+goes into, nor in that of a library it names, which `--lint` checks with the folders the question offers, nor in that of a
+library the project has, which the install checks. Nor can it, or an extra with a `root`, land on a file another library has
+in the project.
+
 ### USER CODE sections
 
 Whatever the user writes between these two comments, in a file of the library's, survives every update. The rest of the file
@@ -155,7 +160,8 @@ is the library's and is replaced.
 ```
 
 A section the new version no longer has, a hand edit outside the sections and markers that no longer pair are each saved
-beside the file before it is replaced, and the run says so.
+beside the file before it is replaced, and the run says so. An extra has no sections, even one that shows the markers: one
+changed by hand is saved beside it the same way, before an install replaces it, or an update or an uninstall removes it.
 
 ### run
 
@@ -171,7 +177,8 @@ folder, as it is written, with no shell. It finds where things are in its enviro
 | `LIBNIMA` | `libnima` |
 
 The same are there under `INSTALLER_`, for a program written for lib-installer. A step that ran before is not run again by an
-update, unless it changed or `--run` asks.
+update, unless it changed or `--run` asks, and that holds when its `unless` file is gone too: `--yes` does not make a second
+key.
 
 ## Titles and notes
 

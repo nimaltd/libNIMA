@@ -531,6 +531,18 @@ impl Target for Zephyr {
         "Run this from your application's folder, the one holding CMakeLists.txt and prj.conf."
     }
 
+    /// An application is a CMakeLists.txt that finds Zephyr. Without one, nothing would build the library.
+    fn not_a_project(&self, project_root: &Path) -> Option<String> {
+        app::find_cmakelists(project_root).is_none().then(|| {
+            format!(
+                "{} is not a Zephyr application: it has no CMakeLists.txt with find_package(Zephyr). Run this from your \
+                 application's folder, the one holding CMakeLists.txt and prj.conf, or give it with --project. Nothing \
+                 was installed.",
+                paths::posix(project_root)
+            )
+        })
+    }
+
     /// Refuses sysbuild.conf as the Kconfig file of --conf.
     fn project_root(&mut self, given: &Path, _ui: &mut dyn Ui) -> Result<PathBuf, InstallError> {
         if let Some(conf) = &self.conf_given
@@ -549,7 +561,7 @@ impl Target for Zephyr {
 
     /// Libraries go together in modules/ of the application.
     fn folder_for(&self, library: &Manifest, _project_root: &Path) -> String {
-        format!("modules/{}", library.name)
+        super::default_folder(Platform::Zephyr, &library.name)
     }
 
     /// The application's files this edits, which a once file must never be: CMakeLists.txt,

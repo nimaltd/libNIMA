@@ -262,6 +262,23 @@ fn a_library_moved_to_another_folder_keeps_one_block() {
     let library = demo(root.path(), "");
 
     install(&project, &library);
+
+    // Not by --dir alone, which would leave the first copy behind, but by taking it out and putting it in again, as the
+    // refusal says.
+    let before = read(project.join("CMakeLists.txt"));
+    let (code, ui) = run(&asked(&project, &library, Some("libs/demo")));
+
+    assert_eq!(code, 2, "{}", ui.out());
+    assert!(
+        ui.err()
+            .contains("demo is installed in modules/demo, and stays there"),
+        "{}",
+        ui.err()
+    );
+    assert_eq!(read(project.join("CMakeLists.txt")), before);
+    assert!(!project.join("libs").exists());
+
+    uninstall(&project, "demo");
     assert_eq!(run(&asked(&project, &library, Some("libs/demo"))).0, 0);
 
     let text = read(project.join("CMakeLists.txt"));
@@ -272,6 +289,33 @@ fn a_library_moved_to_another_folder_keeps_one_block() {
         "{text}"
     );
     assert!(!text.contains("modules/demo"), "{text}");
+}
+
+#[test]
+fn another_librarys_folder_keeps_its_module() {
+    // A second module in the folder would write over the first one's module.yml and Kconfig, and the build would stop on a
+    // switch nothing defines.
+    let root = tempfile::tempdir().unwrap();
+    let project = plain_app(root.path());
+
+    install(&project, &demo(root.path(), ""));
+
+    let module = read(in_module(&project, "demo", "module.yml"));
+    let before = libnima_core::paths::files_below(&project);
+    let (code, ui) = run(&asked(
+        &project,
+        &lib_at(root.path(), "osal", "", &[]),
+        Some("modules/demo"),
+    ));
+
+    assert_eq!(code, 2, "{}", ui.out());
+    assert!(
+        ui.err().contains("modules/demo is where demo is installed"),
+        "{}",
+        ui.err()
+    );
+    assert_eq!(read(in_module(&project, "demo", "module.yml")), module);
+    assert_eq!(libnima_core::paths::files_below(&project), before);
 }
 
 #[test]
@@ -335,23 +379,34 @@ fn a_half_written_block_is_left_for_the_user() {
 }
 
 #[test]
-fn outside_a_zephyr_application_the_lines_to_add_are_shown() {
+fn outside_a_zephyr_application_nothing_is_installed() {
+    // Run from the wrong folder: a library put there would be in no build, and the folder no tidier for it.
     let root = tempfile::tempdir().unwrap();
     let project = application_named(root.path(), "app", "project(plain)\n", None, &[], false);
-    let ui = install(&project, &demo(root.path(), ""));
+    let before = libnima_core::paths::files_below(&project);
+    let (code, ui) = run(&asked(&project, &demo(root.path(), ""), None));
 
+    assert_eq!(code, 2, "{}", ui.out());
     assert!(
-        ui.out()
-            .contains("No CMakeLists.txt with find_package(Zephyr) here"),
+        ui.err().contains(
+            "is not a Zephyr application: it has no CMakeLists.txt with find_package(Zephyr)"
+        ),
         "{}",
-        ui.out()
+        ui.err()
     );
-    assert!(
-        ui.out().contains("list(APPEND ZEPHYR_EXTRA_MODULES"),
-        "{}",
-        ui.out()
-    );
-    assert!(!project.join("prj.conf").exists());
+    assert!(ui.err().contains("--project"), "{}", ui.err());
+    assert!(!ui.out().contains("Done."), "{}", ui.out());
+    assert_eq!(libnima_core::paths::files_below(&project), before);
+
+    // --check says the same, and writes nothing either.
+    let mut checked = asked(&project, &demo(root.path(), ""), None);
+    checked.check_only = true;
+
+    let (code, ui) = run(&checked);
+
+    assert_eq!(code, 1, "{}", ui.out());
+    assert!(ui.out().contains("NO"), "{}", ui.out());
+    assert_eq!(libnima_core::paths::files_below(&project), before);
 }
 
 #[test]

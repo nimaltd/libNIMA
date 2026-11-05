@@ -141,6 +141,19 @@ pub fn warnings(platform: Platform, manifest: &Manifest) -> Vec<String> {
     }
 }
 
+/// The folder a library goes into when nobody gives it another, as a path from the project's folder: what the folder
+/// question offers a project that has not got it yet. Arduino's is the one in a sketch, the only place where a library has
+/// files of the project's own beside it.
+pub fn default_folder(platform: Platform, name: &str) -> String {
+    match platform {
+        Platform::Stm32 => name.to_string(),
+        Platform::Zephyr => format!("modules/{name}"),
+        Platform::Esp32 => format!("{}/{name}", esp32::project::COMPONENTS),
+        Platform::Pio => format!("{}/{name}", pio::LIB),
+        Platform::Arduino => format!("src/{name}"),
+    }
+}
+
 /// What a run asks of each platform's options, from the command line or the window.
 #[derive(Debug, Clone, Default)]
 pub struct PlatformArgs {

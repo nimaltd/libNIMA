@@ -268,6 +268,35 @@ fn a_library_for_another_platform_is_no_with_the_reason() {
 }
 
 #[test]
+fn what_the_install_would_refuse_is_no_with_the_reason() {
+    let root = tempfile::tempdir().unwrap();
+    let project = with_cmake(root.path());
+
+    // A copy of the user's own where the library's file would go, in the folder it offers.
+    write(project.join("demo/src/demo.c"), "/* mine */\n");
+
+    let found = looked_at(&project, &library(root.path(), "demo", DEMO_CODE, &[]));
+
+    assert_eq!(found.mark, Mark::No);
+    assert!(found.why.contains("a file of yours"), "{}", found.why);
+    assert_eq!(found.name, "demo");
+    assert_eq!(read(project.join("demo/src/demo.c")), "/* mine */\n");
+
+    // A git repository in the project, which would lose its .git where it stands.
+    let clone = library(
+        &project,
+        "clone",
+        DEMO_CODE,
+        &[(".git/HEAD", "ref: refs/heads/main\n")],
+    );
+    let found = looked_at(&project, &clone);
+
+    assert_eq!(found.mark, Mark::No);
+    assert!(found.why.contains("is a git repository"), "{}", found.why);
+    assert!(clone.join(".git/HEAD").is_file());
+}
+
+#[test]
 fn a_file_that_cannot_be_read_is_no_with_the_reason() {
     let root = tempfile::tempdir().unwrap();
     let project = with_cmake(root.path());
@@ -692,14 +721,57 @@ fn a_preview_of_a_folder_of_the_project_leaves_it_where_it_is() {
 
     assert_eq!(found.code, 0, "{:?}", found.errors);
     assert!(source.join("libnima.yml").is_file());
+    assert!(!source.join("CMakeLists.txt").exists());
+    // On the copy, the folder became the library where it stands, and kept its libnima.yml.
     assert!(
         found
             .changes
             .iter()
-            .any(|change| change.path == "demo/libnima.yml" && change.kind == ChangeKind::Removed),
+            .any(|change| change.path == "demo/CMakeLists.txt" && change.kind == ChangeKind::Added),
         "{:?}",
         found.changes
     );
+    assert!(
+        !found
+            .changes
+            .iter()
+            .any(|change| change.path == "demo/libnima.yml"),
+        "{:?}",
+        found.changes
+    );
+}
+
+#[test]
+fn a_preview_of_a_git_repository_in_the_project_is_refused_as_the_install_is() {
+    let root = tempfile::tempdir().unwrap();
+    let project = with_cmake(root.path());
+    let source = library(
+        &project,
+        "demo",
+        DEMO_CODE,
+        &[(".git/HEAD", "ref: refs/heads/main\n")],
+    );
+    let before = listing(&project);
+    let found = look::preview(
+        offline(),
+        &Request {
+            libraries: vec![source.to_string_lossy().into_owned()],
+            project: Some(project.clone()),
+            ..Request::default()
+        },
+    );
+
+    assert_eq!(found.code, 2, "{:?}", found.said);
+    assert!(
+        found
+            .errors
+            .iter()
+            .any(|error| error.contains("demo is a git repository")),
+        "{:?}",
+        found.errors
+    );
+    assert!(found.changes.is_empty(), "{:?}", found.changes);
+    assert_eq!(listing(&project), before);
 }
 
 // ----------------------------------------------------------------------------
