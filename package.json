@@ -1,7 +1,7 @@
 {
   "name": "libnima",
   "private": true,
-  "version": "1.1.1",
+  "version": "1.2.0",
   "description": "Install embedded C libraries into STM32, Zephyr, ESP-IDF, Arduino and PlatformIO projects",
   "license": "Apache-2.0",
   "author": "Nima Askari (NimaLTD) <nima.askari@gmail.com>",

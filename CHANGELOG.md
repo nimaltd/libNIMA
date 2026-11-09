@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.2.0
 
 - Two text sizes, as in terNIMA and bleNIMA. The menu text size is for the menus, tabs, buttons and dialogs, which grow with it; it starts at 16 pixels, a quarter bigger than the 13 they were, and 13 in Settings gives the old size. The text size is for the libnima.yml editor and the run's report, and starts at 13 as before. Both are in Settings and in the View menu: Bigger text, Smaller text and Normal text size (Ctrl+=, Ctrl+-, Ctrl+0), and Bigger menu text, Smaller menu text and Normal menu text size.
 - The menus follow terNIMA and bleNIMA: Settings... is in the File menu with Ctrl+, (Cmd+, on macOS), no longer in Tools; the View menu starts with the command palette and ends with the text sizes and the theme (System theme, Dark theme, Light theme); on macOS File ends with Quit libNIMA, Cmd+Q.
