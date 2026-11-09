@@ -55,7 +55,7 @@
   const look = EditorView.theme({
     "&": { height: "100%", color: "var(--text)", backgroundColor: "var(--bg)" },
     ".cm-content": { fontFamily: "var(--font-mono)", caretColor: "var(--accent)", userSelect: "text" },
-    ".cm-scroller": { fontFamily: "var(--font-mono)", fontSize: "13px", lineHeight: "1.55" },
+    ".cm-scroller": { fontFamily: "var(--font-mono)", fontSize: "var(--view-size)", lineHeight: "1.55" },
     ".cm-gutters": { color: "var(--muted)", backgroundColor: "var(--panel)", border: "none" },
     ".cm-activeLine": { backgroundColor: "var(--hover)" },
     ".cm-activeLineGutter": { backgroundColor: "var(--hover)" },

@@ -1,7 +1,17 @@
 // What is in the menu bar.
 
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { settings, updateSettings, type ThemeChoice } from "./settings.svelte";
+import {
+  FONT_SIZE_DEFAULT,
+  FONT_SIZE_MAX,
+  FONT_SIZE_MIN,
+  MENU_FONT_SIZE_DEFAULT,
+  MENU_FONT_SIZE_MAX,
+  MENU_FONT_SIZE_MIN,
+  settings,
+  updateSettings,
+  type ThemeChoice,
+} from "./settings.svelte";
 import type { Command } from "./palette";
 import { editor, newLibrary, pickLibrary, save } from "./editor.svelte";
 import { allChecked, checkAll, installAll, installable, lookForNewer, openProject, view } from "./project.svelte";
@@ -59,6 +69,10 @@ export function buildMenus(app: AppActions): Menu[] {
     checked: () => settings.theme === choice,
     run: () => updateSettings({ theme: choice }),
   });
+  const textSize = (size: number) =>
+    updateSettings({ font_size: Math.min(FONT_SIZE_MAX, Math.max(FONT_SIZE_MIN, size)) });
+  const menuTextSize = (size: number) =>
+    updateSettings({ menu_font_size: Math.min(MENU_FONT_SIZE_MAX, Math.max(MENU_FONT_SIZE_MIN, size)) });
   const hasProject = () => view.project !== null;
   const free = () => view.running === "";
   const canInstall = () => hasProject() && free() && allChecked() && installable().length > 0;
@@ -107,7 +121,9 @@ export function buildMenus(app: AppActions): Menu[] {
             run: () => void save(),
           },
           null,
-          { label: "Exit", run: app.exit },
+          { label: "Settings...", shortcut: keys("Ctrl+,", "Cmd+,"), run: app.settings },
+          null,
+          isMac ? { label: "Quit libNIMA", shortcut: "Cmd+Q", run: app.exit } : { label: "Exit", run: app.exit },
         ];
       },
     },
@@ -123,6 +139,8 @@ export function buildMenus(app: AppActions): Menu[] {
     {
       title: "View",
       items: [
+        { label: "Command palette...", shortcut: keys("Ctrl+Shift+P", "Cmd+Shift+P"), run: app.commandPalette },
+        null,
         { label: "Project", shortcut: keys("Ctrl+1", "Cmd+1"), checked: () => !app.inEditor(), run: () => app.showTab("project") },
         { label: "libnima.yml", shortcut: keys("Ctrl+2", "Cmd+2"), checked: app.inEditor, run: () => app.showTab("editor") },
         null,
@@ -145,12 +163,17 @@ export function buildMenus(app: AppActions): Menu[] {
         },
         { label: "Summary", checked: () => editor.panel, run: () => (editor.panel = !editor.panel) },
         null,
-        "Theme",
-        theme("Follow the OS", "system"),
-        theme("Dark", "dark"),
-        theme("Light", "light"),
+        { label: "Bigger text", shortcut: keys("Ctrl+=", "Cmd+="), run: () => textSize(settings.font_size + 1) },
+        { label: "Smaller text", shortcut: keys("Ctrl+-", "Cmd+-"), run: () => textSize(settings.font_size - 1) },
+        { label: "Normal text size", shortcut: keys("Ctrl+0", "Cmd+0"), run: () => textSize(FONT_SIZE_DEFAULT) },
         null,
-        { label: "Command palette...", shortcut: keys("Ctrl+Shift+P", "Cmd+Shift+P"), run: app.commandPalette },
+        { label: "Bigger menu text", run: () => menuTextSize(settings.menu_font_size + 1) },
+        { label: "Smaller menu text", run: () => menuTextSize(settings.menu_font_size - 1) },
+        { label: "Normal menu text size", run: () => menuTextSize(MENU_FONT_SIZE_DEFAULT) },
+        null,
+        theme("System theme", "system"),
+        theme("Dark theme", "dark"),
+        theme("Light theme", "light"),
       ],
     },
     {
@@ -171,7 +194,6 @@ export function buildMenus(app: AppActions): Menu[] {
           },
         },
         { label: "Add libnima to the PATH...", run: app.addToPath },
-        { label: "Settings...", run: app.settings },
       ],
     },
     {

@@ -35,7 +35,7 @@
     type Item,
     type Preview,
   } from "./lib/project.svelte";
-  import { loadSettings, settings, updateSettings } from "./lib/settings.svelte";
+  import { loadSettings, settings, unzoomed, updateSettings } from "./lib/settings.svelte";
   import { appScheme } from "./lib/theme.svelte";
   import { checkForUpdate, type UpdateCheck } from "./lib/update";
 
@@ -251,7 +251,7 @@
     </button>
   </div>
 
-  <main class="pane">
+  <main class="pane" style:--view-size={`${unzoomed(settings.font_size)}px`}>
     <div class="page" class:hidden={tab !== "project"}>
       <ProjectTab
         bind:this={projectTab}

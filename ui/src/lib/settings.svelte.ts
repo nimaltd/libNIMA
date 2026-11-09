@@ -13,6 +13,10 @@ export type UpdateSettings = {
 /** The same fields as `Settings` in src-tauri's settings.rs. A token is never among them. */
 export type Settings = {
   theme: ThemeChoice;
+  /** The text size of the menus, tabs, buttons and dialogs, which grow with it. */
+  menu_font_size: number;
+  /** The text size of the editor and the run's report. */
+  font_size: number;
   updates: UpdateSettings;
   /** Asks GitHub for newer versions of a project's libraries when it opens. */
   newer_libraries: boolean;
@@ -23,9 +27,31 @@ export type Settings = {
 /** How many projects the File menu lists. */
 const RECENT_KEPT = 8;
 
+/** Menu text size limits, the same as in settings.rs. */
+export const MENU_FONT_SIZE_MIN = 10;
+export const MENU_FONT_SIZE_MAX = 26;
+export const MENU_FONT_SIZE_DEFAULT = 16;
+/** The menu text size app.css and the components are written for; above it, the Rust side zooms the window. */
+const MENU_FONT_SIZE_DRAWN = 13;
+
+/** Text size limits, the same as in settings.rs. */
+export const FONT_SIZE_MIN = 9;
+export const FONT_SIZE_MAX = 24;
+export const FONT_SIZE_DEFAULT = 13;
+
+/**
+ * The CSS size that shows as `size` pixels on screen. The window is zoomed to make the menus' text its size, so the
+ * editor's text is made smaller by as much, and stays at the text size.
+ */
+export function unzoomed(size: number): number {
+  return (size * MENU_FONT_SIZE_DRAWN) / settings.menu_font_size;
+}
+
 /** The settings in use. Read them anywhere; change them only with `updateSettings`. */
 export const settings: Settings = $state({
   theme: "system",
+  menu_font_size: MENU_FONT_SIZE_DEFAULT,
+  font_size: FONT_SIZE_DEFAULT,
   updates: { check: true, skipped: "" },
   newer_libraries: true,
   recent: [],

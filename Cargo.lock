@@ -2218,7 +2218,7 @@ dependencies = [
 
 [[package]]
 name = "libnima-app"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "libnima-core",
  "serde",
@@ -2232,7 +2232,7 @@ dependencies = [
 
 [[package]]
 name = "libnima-cli"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "clap",
  "libnima-core",
@@ -2243,7 +2243,7 @@ dependencies = [
 
 [[package]]
 name = "libnima-core"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "chrono",
  "dunce",

@@ -22,7 +22,7 @@ use libnima_core::scaffold;
 use libnima_core::schema::{self, Completions, Group, Help, Key};
 use libnima_core::ymledit::{self, Step};
 use serde::{Deserialize, Serialize};
-use tauri::{Manager, State, WindowEvent};
+use tauri::{Manager, State, WebviewWindow, WindowEvent};
 
 use settings::{Saved, Settings};
 
@@ -271,14 +271,24 @@ fn get_settings(file: State<Saved>) -> Settings {
 
 /// Saves new settings at once.
 #[tauri::command]
-fn set_settings(settings: Settings, file: State<Saved>) -> Result<(), String> {
+fn set_settings(settings: Settings, file: State<Saved>, main: WebviewWindow) -> Result<(), String> {
+    let settings = settings.checked();
+    let menu_font_size = settings.menu_font_size;
+    let before = file.get().menu_font_size;
+
     file.change(|current| {
         // The window's place and size come from the window, not from the UI.
         *current = Settings {
             window: current.window,
             ..settings
         };
-    })
+    })?;
+
+    if menu_font_size != before {
+        window::set_menu_font_size(&main, menu_font_size);
+    }
+
+    Ok(())
 }
 
 fn main() {
@@ -297,6 +307,7 @@ fn main() {
             let path = app.path().app_config_dir()?.join("settings.json");
             let settings = Settings::load(&path);
             let before = settings.window;
+            let menu_font_size = settings.menu_font_size;
 
             app.manage(Saved::new(path, settings));
             app.manage(StartFolder(start.clone()));
@@ -304,6 +315,8 @@ fn main() {
             app.manage(window::Unsaved::default());
 
             if let Some(main) = app.get_webview_window("main") {
+                // Before the window shows, so it never changes size in sight.
+                window::set_menu_font_size(&main, menu_font_size);
                 window::restore(&main, before);
             }
 

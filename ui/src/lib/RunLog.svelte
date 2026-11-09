@@ -117,7 +117,8 @@
     min-height: 0;
     padding: 4px 12px 8px;
     overflow: auto;
-    font-size: 12px;
+    /* A step under the editor's text, as it was at 12px beside the editor's 13px. */
+    font-size: calc(var(--view-size) * 12 / 13);
     background: var(--bg);
   }
 
