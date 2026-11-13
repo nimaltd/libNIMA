@@ -96,12 +96,23 @@ libNIMA reads your project and says which file told it. When that is wrong, say 
 | Answer every question with the answer offered, for a script | `--yes` |
 | STM32: register with one IDE only | `--ide cubeide`, of `cmake`, `cubeide`, `keil`, `iar` and `makefile` |
 | Zephyr: the Kconfig file the libraries are switched on in | `--conf boards/x.conf` |
+| Zephyr: the overlay that includes the libraries' devicetree | `--overlay boards/x.overlay`, or `--overlay 'boards/*.overlay'` |
 | Arduino: into the libraries folder, or the sketch's `src` | `--into libraries`, `--into sketch` |
 | Arduino: give the sketchbook folder | `--sketchbook D:/Arduino` |
 | Check a folder's `libnima.yml` with no project | `libnima --lint` |
 | Write a folder's `installer.yml` out as `libnima.yml` | `libnima --convert` |
 | Write the JSON Schema of `libnima.yml`, for an editor | `libnima --schema` |
 | Put the command alone on the PATH, or take it off | `libnima --add-to-path`, `--remove-from-path` |
+
+### Exit codes
+
+| Code | Means |
+|---|---|
+| 0 | Done, or nothing found to report. |
+| 1 | `--check` found something to do first (CHECK) or a library that cannot go in (NO), `--lint` found an error, or a run step failed once its library was in. |
+| 2 | A mistake in the command line, or a run that was refused or failed: nothing of it was written. |
+
+So a script can stop on what `--check` says: `libnima owner/example --check || exit 1`.
 
 ### On a bad connection
 

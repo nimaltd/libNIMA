@@ -125,21 +125,10 @@ impl Target for Stm32 {
     /// be: every IDE's project file, the Makefile, CubeMX's .ioc, and the HAL
     /// configuration header.
     fn managed_files(&self, _project_root: &Path, _library: &Manifest) -> Vec<String> {
-        [
-            crate::record::RECORD_NAME,
-            "CMakeLists.txt",
-            ".cproject",
-            ".project",
-            "*.uvprojx",
-            "*.ewp",
-            "*.ewt",
-            "*.eww",
-            "Makefile",
-            "*.ioc",
-            "*_hal_conf.h",
-        ]
-        .map(String::from)
-        .to_vec()
+        super::managed_patterns(Platform::Stm32)
+            .into_iter()
+            .map(String::from)
+            .collect()
     }
 
     fn check(&mut self, library: &Manifest, project_root: &Path, _ui: &mut dyn Ui) -> Vec<Finding> {

@@ -97,12 +97,22 @@
         {
           "type": "array",
           "items": {
-            "oneOf": [
+            "anyOf": [
               {
                 "type": "string"
               },
               {
-                "type": "object"
+                "type": "object",
+                "minProperties": 1,
+                "maxProperties": 1,
+                "additionalProperties": {
+                  "type": [
+                    "string",
+                    "number",
+                    "boolean",
+                    "null"
+                  ]
+                }
               }
             ]
           }
@@ -126,67 +136,56 @@
           "description": "The oldest libNIMA that reads this file, three numbers."
         },
         "libraries": {
-          "oneOf": [
-            {
-              "type": "array",
-              "items": {
-                "oneOf": [
-                  {
-                    "oneOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "object",
-                        "additionalProperties": false,
-                        "properties": {
-                          "source": {
-                            "type": [
-                              "string",
-                              "number",
-                              "boolean"
-                            ],
-                            "description": "A repository with no libnima.yml of its own, as owner/name."
-                          },
-                          "manifest": {
-                            "type": [
-                              "string",
-                              "number",
-                              "boolean"
-                            ],
-                            "description": "The file this library carries for that repository."
-                          },
-                          "minimum": {
-                            "type": [
-                              "string",
-                              "number",
-                              "boolean"
-                            ],
-                            "description": "The oldest version of it that will do."
-                          },
-                          "name": {
-                            "type": [
-                              "string",
-                              "number",
-                              "boolean"
-                            ],
-                            "description": "Its name in the project, when that is not the repository's."
-                          }
-                        }
-                      }
-                    ]
+          "type": "array",
+          "items": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "source"
+                ],
+                "properties": {
+                  "source": {
+                    "type": [
+                      "string",
+                      "number",
+                      "boolean"
+                    ],
+                    "description": "Where it comes from, owner/name or owner/name@ref."
                   },
-                  {
-                    "type": "object"
+                  "manifest": {
+                    "type": [
+                      "string",
+                      "number",
+                      "boolean"
+                    ],
+                    "description": "The file this library carries for that repository."
+                  },
+                  "minimum": {
+                    "type": [
+                      "string",
+                      "number",
+                      "boolean"
+                    ],
+                    "description": "The oldest version of it that will do."
+                  },
+                  "name": {
+                    "type": [
+                      "string",
+                      "number",
+                      "boolean"
+                    ],
+                    "description": "Its name in the project, when that is not the repository's."
                   }
-                ]
+                }
               }
-            },
-            {
-              "type": "object"
-            }
-          ],
-          "description": "Other libraries, installed first when missing: osal >= 1.0.0, owner/lib or owner/lib@v1.2.0."
+            ]
+          },
+          "description": "Other libraries, installed first when missing: osal >= 1.0.0, owner/lib or owner/lib@v1.2.0. A library from that repository counts, whatever its name. A ref is only where a missing one is fetched from, and sets no minimum: owner/lib@v1.2.0 >= 1.2.0 does."
         },
         "peripherals": {
           "type": "array",
@@ -299,12 +298,22 @@
         {
           "type": "array",
           "items": {
-            "oneOf": [
+            "anyOf": [
               {
                 "type": "string"
               },
               {
-                "type": "object"
+                "type": "object",
+                "minProperties": 1,
+                "maxProperties": 1,
+                "additionalProperties": {
+                  "type": [
+                    "string",
+                    "number",
+                    "boolean",
+                    "null"
+                  ]
+                }
               }
             ]
           }
@@ -320,12 +329,22 @@
         {
           "type": "array",
           "items": {
-            "oneOf": [
+            "anyOf": [
               {
                 "type": "string"
               },
               {
-                "type": "object"
+                "type": "object",
+                "minProperties": 1,
+                "maxProperties": 1,
+                "additionalProperties": {
+                  "type": [
+                    "string",
+                    "number",
+                    "boolean",
+                    "null"
+                  ]
+                }
               }
             ]
           }
@@ -351,24 +370,55 @@
             "description": "The question asked about it."
           },
           "libraries": {
-            "oneOf": [
-              {
-                "type": "array",
-                "items": {
-                  "oneOf": [
-                    {
-                      "type": "string"
+            "type": "array",
+            "items": {
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "source"
+                  ],
+                  "properties": {
+                    "source": {
+                      "type": [
+                        "string",
+                        "number",
+                        "boolean"
+                      ],
+                      "description": "Where it comes from, owner/name or owner/name@ref."
                     },
-                    {
-                      "type": "object"
+                    "manifest": {
+                      "type": [
+                        "string",
+                        "number",
+                        "boolean"
+                      ],
+                      "description": "The file this library carries for that repository."
+                    },
+                    "minimum": {
+                      "type": [
+                        "string",
+                        "number",
+                        "boolean"
+                      ],
+                      "description": "The oldest version of it that will do."
+                    },
+                    "name": {
+                      "type": [
+                        "string",
+                        "number",
+                        "boolean"
+                      ],
+                      "description": "Its name in the project, when that is not the repository's."
                     }
-                  ]
+                  }
                 }
-              },
-              {
-                "type": "object"
-              }
-            ],
+              ]
+            },
             "description": "Libraries this part needs, installed first."
           },
           "headers": {
@@ -381,7 +431,24 @@
                 {
                   "type": "object",
                   "additionalProperties": false,
-                  "properties": {}
+                  "properties": {
+                    "from": {
+                      "type": [
+                        "string",
+                        "number",
+                        "boolean"
+                      ],
+                      "description": "The file, in the library."
+                    },
+                    "to": {
+                      "type": [
+                        "string",
+                        "number",
+                        "boolean"
+                      ],
+                      "description": "Where it lands in the library's folder in the project."
+                    }
+                  }
                 }
               ]
             },
@@ -397,7 +464,24 @@
                 {
                   "type": "object",
                   "additionalProperties": false,
-                  "properties": {}
+                  "properties": {
+                    "from": {
+                      "type": [
+                        "string",
+                        "number",
+                        "boolean"
+                      ],
+                      "description": "The file, in the library."
+                    },
+                    "to": {
+                      "type": [
+                        "string",
+                        "number",
+                        "boolean"
+                      ],
+                      "description": "Where it lands in the library's folder in the project."
+                    }
+                  }
                 }
               ]
             },
@@ -420,12 +504,22 @@
                           {
                             "type": "array",
                             "items": {
-                              "oneOf": [
+                              "anyOf": [
                                 {
                                   "type": "string"
                                 },
                                 {
-                                  "type": "object"
+                                  "type": "object",
+                                  "minProperties": 1,
+                                  "maxProperties": 1,
+                                  "additionalProperties": {
+                                    "type": [
+                                      "string",
+                                      "number",
+                                      "boolean",
+                                      "null"
+                                    ]
+                                  }
                                 }
                               ]
                             }
@@ -441,12 +535,22 @@
                           {
                             "type": "array",
                             "items": {
-                              "oneOf": [
+                              "anyOf": [
                                 {
                                   "type": "string"
                                 },
                                 {
-                                  "type": "object"
+                                  "type": "object",
+                                  "minProperties": 1,
+                                  "maxProperties": 1,
+                                  "additionalProperties": {
+                                    "type": [
+                                      "string",
+                                      "number",
+                                      "boolean",
+                                      "null"
+                                    ]
+                                  }
                                 }
                               ]
                             }
@@ -459,9 +563,66 @@
                       }
                     },
                     "description": "Its blocks in the application's CMakeLists.txt, by place."
+                  },
+                  "overlay": {
+                    "oneOf": [
+                      {
+                        "type": "array",
+                        "items": {
+                          "anyOf": [
+                            {
+                              "oneOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "object",
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "from": {
+                                      "type": [
+                                        "string",
+                                        "number",
+                                        "boolean"
+                                      ],
+                                      "description": "The file to include, from the application's folder, or {library}/... in the library's."
+                                    },
+                                    "to": {
+                                      "type": [
+                                        "string",
+                                        "number",
+                                        "boolean"
+                                      ],
+                                      "description": "The overlay it goes into, or every one a wildcard matches."
+                                    }
+                                  }
+                                }
+                              ]
+                            },
+                            {
+                              "type": "object",
+                              "minProperties": 1,
+                              "maxProperties": 1,
+                              "additionalProperties": {
+                                "type": [
+                                  "string",
+                                  "number",
+                                  "boolean",
+                                  "null"
+                                ]
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "type": "object"
+                      }
+                    ],
+                    "description": "Files this part's #include lines in the application's overlay name, written while it is taken."
                   }
                 },
-                "description": "Lines for the application's CMakeLists.txt."
+                "description": "Lines for the application's CMakeLists.txt and its overlay."
               },
               "library": {
                 "type": "object",
@@ -472,12 +633,22 @@
                       {
                         "type": "array",
                         "items": {
-                          "oneOf": [
+                          "anyOf": [
                             {
                               "type": "string"
                             },
                             {
-                              "type": "object"
+                              "type": "object",
+                              "minProperties": 1,
+                              "maxProperties": 1,
+                              "additionalProperties": {
+                                "type": [
+                                  "string",
+                                  "number",
+                                  "boolean",
+                                  "null"
+                                ]
+                              }
                             }
                           ]
                         }
@@ -492,7 +663,7 @@
                 "description": "Lines for the library's own CMakeLists.txt."
               }
             },
-            "description": "This part's CMake lines in a Zephyr project."
+            "description": "This part's CMake lines, and its #include lines in the overlay, in a Zephyr project."
           },
           "esp32": {
             "type": "object",
@@ -511,12 +682,22 @@
                           {
                             "type": "array",
                             "items": {
-                              "oneOf": [
+                              "anyOf": [
                                 {
                                   "type": "string"
                                 },
                                 {
-                                  "type": "object"
+                                  "type": "object",
+                                  "minProperties": 1,
+                                  "maxProperties": 1,
+                                  "additionalProperties": {
+                                    "type": [
+                                      "string",
+                                      "number",
+                                      "boolean",
+                                      "null"
+                                    ]
+                                  }
                                 }
                               ]
                             }
@@ -532,12 +713,22 @@
                           {
                             "type": "array",
                             "items": {
-                              "oneOf": [
+                              "anyOf": [
                                 {
                                   "type": "string"
                                 },
                                 {
-                                  "type": "object"
+                                  "type": "object",
+                                  "minProperties": 1,
+                                  "maxProperties": 1,
+                                  "additionalProperties": {
+                                    "type": [
+                                      "string",
+                                      "number",
+                                      "boolean",
+                                      "null"
+                                    ]
+                                  }
                                 }
                               ]
                             }
@@ -563,12 +754,22 @@
                       {
                         "type": "array",
                         "items": {
-                          "oneOf": [
+                          "anyOf": [
                             {
                               "type": "string"
                             },
                             {
-                              "type": "object"
+                              "type": "object",
+                              "minProperties": 1,
+                              "maxProperties": 1,
+                              "additionalProperties": {
+                                "type": [
+                                  "string",
+                                  "number",
+                                  "boolean",
+                                  "null"
+                                ]
+                              }
                             }
                           ]
                         }
@@ -749,12 +950,22 @@
                 {
                   "type": "array",
                   "items": {
-                    "oneOf": [
+                    "anyOf": [
                       {
                         "type": "string"
                       },
                       {
-                        "type": "object"
+                        "type": "object",
+                        "minProperties": 1,
+                        "maxProperties": 1,
+                        "additionalProperties": {
+                          "type": [
+                            "string",
+                            "number",
+                            "boolean",
+                            "null"
+                          ]
+                        }
                       }
                     ]
                   }
@@ -780,10 +991,27 @@
       "additionalProperties": false,
       "properties": {
         "symbol": {
-          "type": [
-            "string",
-            "number",
-            "boolean"
+          "oneOf": [
+            {
+              "type": [
+                "string",
+                "number",
+                "boolean"
+              ]
+            },
+            {
+              "type": "object",
+              "minProperties": 1,
+              "maxProperties": 1,
+              "additionalProperties": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean",
+                  "null"
+                ]
+              }
+            }
           ],
           "description": "CONFIG_EXAMPLE=y turns the library on. The name in capitals when left out."
         },
@@ -857,12 +1085,22 @@
                 {
                   "type": "array",
                   "items": {
-                    "oneOf": [
+                    "anyOf": [
                       {
                         "type": "string"
                       },
                       {
-                        "type": "object"
+                        "type": "object",
+                        "minProperties": 1,
+                        "maxProperties": 1,
+                        "additionalProperties": {
+                          "type": [
+                            "string",
+                            "number",
+                            "boolean",
+                            "null"
+                          ]
+                        }
                       }
                     ]
                   }
@@ -878,12 +1116,22 @@
                 {
                   "type": "array",
                   "items": {
-                    "oneOf": [
+                    "anyOf": [
                       {
                         "type": "string"
                       },
                       {
-                        "type": "object"
+                        "type": "object",
+                        "minProperties": 1,
+                        "maxProperties": 1,
+                        "additionalProperties": {
+                          "type": [
+                            "string",
+                            "number",
+                            "boolean",
+                            "null"
+                          ]
+                        }
                       }
                     ]
                   }
@@ -903,12 +1151,22 @@
                     {
                       "type": "array",
                       "items": {
-                        "oneOf": [
+                        "anyOf": [
                           {
                             "type": "string"
                           },
                           {
-                            "type": "object"
+                            "type": "object",
+                            "minProperties": 1,
+                            "maxProperties": 1,
+                            "additionalProperties": {
+                              "type": [
+                                "string",
+                                "number",
+                                "boolean",
+                                "null"
+                              ]
+                            }
                           }
                         ]
                       }
@@ -924,12 +1182,22 @@
                     {
                       "type": "array",
                       "items": {
-                        "oneOf": [
+                        "anyOf": [
                           {
                             "type": "string"
                           },
                           {
-                            "type": "object"
+                            "type": "object",
+                            "minProperties": 1,
+                            "maxProperties": 1,
+                            "additionalProperties": {
+                              "type": [
+                                "string",
+                                "number",
+                                "boolean",
+                                "null"
+                              ]
+                            }
                           }
                         ]
                       }
@@ -942,6 +1210,63 @@
                 }
               },
               "description": "Its blocks in the application's CMakeLists.txt, by place."
+            },
+            "overlay": {
+              "oneOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "anyOf": [
+                      {
+                        "oneOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                              "from": {
+                                "type": [
+                                  "string",
+                                  "number",
+                                  "boolean"
+                                ],
+                                "description": "The file to include: from the application's folder, where a once file puts it, or {library}/... in the library's."
+                              },
+                              "to": {
+                                "type": [
+                                  "string",
+                                  "number",
+                                  "boolean"
+                                ],
+                                "description": "The overlay it goes into, such as boards/example.overlay, or every one a wildcard matches, such as boards/*.overlay."
+                              }
+                            }
+                          }
+                        ]
+                      },
+                      {
+                        "type": "object",
+                        "minProperties": 1,
+                        "maxProperties": 1,
+                        "additionalProperties": {
+                          "type": [
+                            "string",
+                            "number",
+                            "boolean",
+                            "null"
+                          ]
+                        }
+                      }
+                    ]
+                  }
+                },
+                {
+                  "type": "object"
+                }
+              ],
+              "description": "Files the application's overlay includes, in a block of #include lines: each a path, into the overlay found and asked when there are several, or a from and a to."
             }
           },
           "description": "What it writes into the application's own files."
@@ -955,12 +1280,22 @@
                 {
                   "type": "array",
                   "items": {
-                    "oneOf": [
+                    "anyOf": [
                       {
                         "type": "string"
                       },
                       {
-                        "type": "object"
+                        "type": "object",
+                        "minProperties": 1,
+                        "maxProperties": 1,
+                        "additionalProperties": {
+                          "type": [
+                            "string",
+                            "number",
+                            "boolean",
+                            "null"
+                          ]
+                        }
                       }
                     ]
                   }
@@ -976,12 +1311,22 @@
                 {
                   "type": "array",
                   "items": {
-                    "oneOf": [
+                    "anyOf": [
                       {
                         "type": "string"
                       },
                       {
-                        "type": "object"
+                        "type": "object",
+                        "minProperties": 1,
+                        "maxProperties": 1,
+                        "additionalProperties": {
+                          "type": [
+                            "string",
+                            "number",
+                            "boolean",
+                            "null"
+                          ]
+                        }
                       }
                     ]
                   }
@@ -997,12 +1342,22 @@
                 {
                   "type": "array",
                   "items": {
-                    "oneOf": [
+                    "anyOf": [
                       {
                         "type": "string"
                       },
                       {
-                        "type": "object"
+                        "type": "object",
+                        "minProperties": 1,
+                        "maxProperties": 1,
+                        "additionalProperties": {
+                          "type": [
+                            "string",
+                            "number",
+                            "boolean",
+                            "null"
+                          ]
+                        }
                       }
                     ]
                   }
@@ -1093,12 +1448,22 @@
                 {
                   "type": "array",
                   "items": {
-                    "oneOf": [
+                    "anyOf": [
                       {
                         "type": "string"
                       },
                       {
-                        "type": "object"
+                        "type": "object",
+                        "minProperties": 1,
+                        "maxProperties": 1,
+                        "additionalProperties": {
+                          "type": [
+                            "string",
+                            "number",
+                            "boolean",
+                            "null"
+                          ]
+                        }
                       }
                     ]
                   }
@@ -1118,12 +1483,22 @@
                     {
                       "type": "array",
                       "items": {
-                        "oneOf": [
+                        "anyOf": [
                           {
                             "type": "string"
                           },
                           {
-                            "type": "object"
+                            "type": "object",
+                            "minProperties": 1,
+                            "maxProperties": 1,
+                            "additionalProperties": {
+                              "type": [
+                                "string",
+                                "number",
+                                "boolean",
+                                "null"
+                              ]
+                            }
                           }
                         ]
                       }
@@ -1139,12 +1514,22 @@
                     {
                       "type": "array",
                       "items": {
-                        "oneOf": [
+                        "anyOf": [
                           {
                             "type": "string"
                           },
                           {
-                            "type": "object"
+                            "type": "object",
+                            "minProperties": 1,
+                            "maxProperties": 1,
+                            "additionalProperties": {
+                              "type": [
+                                "string",
+                                "number",
+                                "boolean",
+                                "null"
+                              ]
+                            }
                           }
                         ]
                       }
@@ -1170,12 +1555,22 @@
                 {
                   "type": "array",
                   "items": {
-                    "oneOf": [
+                    "anyOf": [
                       {
                         "type": "string"
                       },
                       {
-                        "type": "object"
+                        "type": "object",
+                        "minProperties": 1,
+                        "maxProperties": 1,
+                        "additionalProperties": {
+                          "type": [
+                            "string",
+                            "number",
+                            "boolean",
+                            "null"
+                          ]
+                        }
                       }
                     ]
                   }
@@ -1191,12 +1586,22 @@
                 {
                   "type": "array",
                   "items": {
-                    "oneOf": [
+                    "anyOf": [
                       {
                         "type": "string"
                       },
                       {
-                        "type": "object"
+                        "type": "object",
+                        "minProperties": 1,
+                        "maxProperties": 1,
+                        "additionalProperties": {
+                          "type": [
+                            "string",
+                            "number",
+                            "boolean",
+                            "null"
+                          ]
+                        }
                       }
                     ]
                   }
@@ -1222,12 +1627,22 @@
             {
               "type": "array",
               "items": {
-                "oneOf": [
+                "anyOf": [
                   {
                     "type": "string"
                   },
                   {
-                    "type": "object"
+                    "type": "object",
+                    "minProperties": 1,
+                    "maxProperties": 1,
+                    "additionalProperties": {
+                      "type": [
+                        "string",
+                        "number",
+                        "boolean",
+                        "null"
+                      ]
+                    }
                   }
                 ]
               }
@@ -1273,12 +1688,22 @@
             {
               "type": "array",
               "items": {
-                "oneOf": [
+                "anyOf": [
                   {
                     "type": "string"
                   },
                   {
-                    "type": "object"
+                    "type": "object",
+                    "minProperties": 1,
+                    "maxProperties": 1,
+                    "additionalProperties": {
+                      "type": [
+                        "string",
+                        "number",
+                        "boolean",
+                        "null"
+                      ]
+                    }
                   }
                 ]
               }
@@ -1305,12 +1730,22 @@
                 {
                   "type": "array",
                   "items": {
-                    "oneOf": [
+                    "anyOf": [
                       {
                         "type": "string"
                       },
                       {
-                        "type": "object"
+                        "type": "object",
+                        "minProperties": 1,
+                        "maxProperties": 1,
+                        "additionalProperties": {
+                          "type": [
+                            "string",
+                            "number",
+                            "boolean",
+                            "null"
+                          ]
+                        }
                       }
                     ]
                   }
@@ -1333,12 +1768,22 @@
                 {
                   "type": "array",
                   "items": {
-                    "oneOf": [
+                    "anyOf": [
                       {
                         "type": "string"
                       },
                       {
-                        "type": "object"
+                        "type": "object",
+                        "minProperties": 1,
+                        "maxProperties": 1,
+                        "additionalProperties": {
+                          "type": [
+                            "string",
+                            "number",
+                            "boolean",
+                            "null"
+                          ]
+                        }
                       }
                     ]
                   }
@@ -1354,12 +1799,22 @@
                 {
                   "type": "array",
                   "items": {
-                    "oneOf": [
+                    "anyOf": [
                       {
                         "type": "string"
                       },
                       {
-                        "type": "object"
+                        "type": "object",
+                        "minProperties": 1,
+                        "maxProperties": 1,
+                        "additionalProperties": {
+                          "type": [
+                            "string",
+                            "number",
+                            "boolean",
+                            "null"
+                          ]
+                        }
                       }
                     ]
                   }
@@ -1375,12 +1830,22 @@
                 {
                   "type": "array",
                   "items": {
-                    "oneOf": [
+                    "anyOf": [
                       {
                         "type": "string"
                       },
                       {
-                        "type": "object"
+                        "type": "object",
+                        "minProperties": 1,
+                        "maxProperties": 1,
+                        "additionalProperties": {
+                          "type": [
+                            "string",
+                            "number",
+                            "boolean",
+                            "null"
+                          ]
+                        }
                       }
                     ]
                   }
@@ -1405,5 +1870,17 @@
   "required": [
     "name",
     "platform"
+  ],
+  "anyOf": [
+    {
+      "required": [
+        "headers"
+      ]
+    },
+    {
+      "required": [
+        "sources"
+      ]
+    }
   ]
 }

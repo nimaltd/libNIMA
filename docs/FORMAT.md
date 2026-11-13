@@ -49,9 +49,10 @@ requires:
   libraries:                       # other libraries, installed first when missing
     - osal >= 1.0.0                # no owner means nimaltd; >= the oldest that will do
     - owner/lib                    # anyone else's, as owner/name
-    - owner/lib@v1.2.0             # a tag, branch or commit, not its default branch
-    - source: owner/other@v2.9.3   # a repository with no libnima.yml of its own,
-      manifest: manifests/other.yml  # with one this library carries for it
+    - owner/lib@v1.2.0             # a tag, branch or commit to fetch a missing one from: it sets no minimum
+    - owner/lib@v1.2.0 >= 1.2.0    # the same, with the oldest that will do
+    - source: owner/other@v2.9.3   # where it comes from, owner/name or owner/name@ref
+      manifest: manifests/other.yml  # for a repository with no libnima.yml: the one this library carries for it
       minimum: 2.9.0               # the oldest version that will do
       name: other                  # its name in the project, when not the repository's
   peripherals:                     # what the board has to have
@@ -122,6 +123,16 @@ is written in the code and nowhere else:
  * @version     2.0.0
  */
 ```
+
+It is three numbers, as a requirement's minimum is, since it is what another library's minimum is compared with. `--lint`
+says when it is something else, or there is none, and when a `version:` says another than the tag; the tag is the one used.
+
+### requires.libraries
+
+A library another one needs is matched by its name, or by the repository it comes from: the `repository` of its
+`libnima.yml`, or where libNIMA fetched it from. So `owner/lib` is met by a library from `owner/lib` whatever it is called,
+installed or given on the same command line, and the repository is fetched only when neither is there. A ref, `@v1.2.0`, is
+where a missing one is fetched from, and sets no minimum: give `>= 1.2.0`, or `minimum:`, for that.
 
 ### requires.libnima
 
@@ -245,6 +256,11 @@ zephyr:
         - list(APPEND EXTRA_DTC_OVERLAY_FILE "{library}/dts/example.overlay")
       after-zephyr:
         - target_sources(app PRIVATE src/extra.c)
+    overlay:                       # its block of #include lines in the application's overlay
+      - boards/example.dtsi        # a file a once file puts there: into the overlay found,
+                                   # or those picked when there are several
+      - from: '{library}/dts/example.dtsi'  # a file of its own folder, into this overlay,
+        to: boards/*.overlay       # or every one a wildcard matches
   library:                         # its own folder
     kconfig:                       # defaults in its Kconfig, while the switch is on
       - BT
@@ -255,7 +271,7 @@ zephyr:
 ```
 
 A symbol is written in capitals, with or without `CONFIG_`: `I2C`, which is set to `y`, or `I2C=n`, `SIZE=8`, `SIZE=0x10`,
-`NAME="text"`. An option takes `zephyr.project.cmake` and `zephyr.library.cmake`.
+`NAME="text"`. An option takes `zephyr.project.cmake`, `zephyr.project.overlay` and `zephyr.library.cmake`.
 
 ## ESP-IDF
 

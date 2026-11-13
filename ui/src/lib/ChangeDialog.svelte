@@ -24,6 +24,8 @@
   // svelte-ignore state_referenced_locally
   let conf = $state(choices.conf ?? "");
   // svelte-ignore state_referenced_locally
+  let overlay = $state(choices.overlay ?? "");
+  // svelte-ignore state_referenced_locally
   let into = $state(choices.into ?? "");
   // svelte-ignore state_referenced_locally
   let sketchbook = $state(choices.sketchbook ?? "");
@@ -43,6 +45,7 @@
       platform: platform || null,
       ide: shown === "stm32" && ide ? ide : null,
       conf: shown === "zephyr" && conf.trim() ? conf.trim() : null,
+      overlay: shown === "zephyr" && overlay.trim() ? overlay.trim() : null,
       into: shown === "arduino" && into ? into : null,
       sketchbook: shown === "arduino" && sketchbook.trim() ? sketchbook.trim() : null,
     });
@@ -92,6 +95,22 @@
         <input class="field mono" list="conf-files" placeholder="Asked when there are several" bind:value={conf} />
         <datalist id="conf-files">
           {#each project.conf_files as one (one)}
+            <option value={one}></option>
+          {/each}
+        </datalist>
+      </label>
+
+      <label class="dlg-label">
+        Overlay
+        <input
+          class="field mono"
+          list="overlay-files"
+          placeholder="As each library says, or asked"
+          title="The overlay that includes the libraries' devicetree, or every one a wildcard matches, such as boards/*.overlay"
+          bind:value={overlay}
+        />
+        <datalist id="overlay-files">
+          {#each project.overlay_files as one (one)}
             <option value={one}></option>
           {/each}
         </datalist>

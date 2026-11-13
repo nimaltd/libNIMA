@@ -105,6 +105,96 @@ fn a_file_that_is_not_a_zip_is_refused() {
 }
 
 #[test]
+fn a_zip_that_cannot_be_read_is_said_to_be_one_not_an_empty_one() {
+    let root = tempfile::tempdir().unwrap();
+    let project = stm32_project(root.path());
+    let folder = lib(&root.path().join("disk"), "liba", "1.0.0", &[]);
+    let whole = zip_of(&folder, &root.path().join("liba-main.zip"), "liba-main");
+    let bytes = fs::read(&whole).unwrap();
+
+    for (name, data) in [
+        ("truncated.zip", &bytes[..bytes.len() / 2]),
+        ("empty.zip", &b""[..]),
+        ("notazip.zip", &b"<html>Not Found</html>"[..]),
+    ] {
+        let archive = root.path().join(name);
+        fs::write(&archive, data).unwrap();
+
+        let (code, ui) = run(offline(), &request(&project, &[&archive]));
+
+        assert_eq!(code, 2, "{name}");
+        assert!(
+            ui.err().contains("cannot be read as a zip") && ui.err().contains("download it again"),
+            "{name}: {}",
+            ui.err()
+        );
+        assert!(!ui.err().contains("holds no"), "{name}: {}", ui.err());
+        assert!(record(&project).is_empty());
+    }
+}
+
+#[test]
+fn a_ref_with_nothing_fetched_from_github_is_refused_before_anything() {
+    let root = tempfile::tempdir().unwrap();
+    let project = stm32_project(root.path());
+    let folder = lib(&root.path().join("disk"), "liba", "1.0.0", &[]);
+    let archive = zip_of(&folder, &root.path().join("liba-main.zip"), "liba-main");
+
+    for given in [&folder, &archive] {
+        let mut asked = request(&project, &[given]);
+        asked.reference = Some("v9.9.9".to_string());
+
+        let (code, ui) = run(offline(), &asked);
+
+        assert_eq!(code, 2, "{}", ui.out());
+        assert!(
+            ui.err()
+                .contains("--ref v9.9.9 is for a library fetched from GitHub"),
+            "{}",
+            ui.err()
+        );
+        assert!(record(&project).is_empty());
+    }
+}
+
+#[test]
+fn an_address_not_on_github_is_refused_and_an_ssh_one_is_read() {
+    let root = tempfile::tempdir().unwrap();
+    let project = stm32_project(root.path());
+    let liba = lib(&root.path().join("gh"), "liba", "1.0.0", &[]);
+
+    for given in [
+        "https://gitlab.com/tester/liba",
+        "git@gitlab.com:tester/liba.git",
+    ] {
+        let (client, server) = github(&[("tester/liba", &liba)]);
+        let mut asked = request(&project, &[]);
+        asked.libraries = vec![given.to_string()];
+
+        let (code, ui) = run(client, &asked);
+
+        assert_eq!(code, 2, "{given}");
+        assert!(
+            ui.err().contains("is not on GitHub"),
+            "{given}: {}",
+            ui.err()
+        );
+        assert!(server.repos_asked().is_empty(), "{given} reached GitHub");
+    }
+
+    let (client, server) = github(&[("tester/liba", &liba)]);
+    let mut asked = request(&project, &[]);
+    asked.libraries = vec!["git@github.com:tester/liba.git".to_string()];
+    asked.folder = Some("liba".to_string());
+
+    let (code, ui) = run(client, &asked);
+
+    assert_eq!(code, 0, "{}\n{}", ui.out(), ui.err());
+    assert_eq!(server.repos_asked(), ["tester/liba"]);
+    assert!(project.join("liba/inc/liba.h").is_file());
+}
+
+#[test]
 fn a_zip_goes_in_without_being_unpacked_first() {
     let root = tempfile::tempdir().unwrap();
     let project = stm32_project(root.path());
@@ -734,6 +824,388 @@ fn a_dependency_with_no_manifest_comes_with_the_one_carried_for_it() {
     assert_eq!(record(&project)["lfs"]["version"], "2.1.0");
 }
 
+/// A library of a version, in a folder of its own under where_/tag, with more of its libnima.yml.
+fn lib_at(where_: &Path, tag: &str, name: &str, version: &str, more: &str) -> PathBuf {
+    library(
+        &where_.join(tag),
+        name,
+        &format!("version: {version}\nheaders:\n  - inc/{name}.h\n{more}"),
+        &[(&format!("inc/{name}.h"), "/* header */\n")],
+    )
+}
+
+/// A copy of a folder, file by file.
+fn copy_tree(from: &Path, to: &Path) {
+    for path in listing(from) {
+        let target = to.join(&path);
+
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::copy(from.join(&path), target).unwrap();
+    }
+}
+
+/// What a library needs, as its libnima.yml lists it.
+fn needing(lines: &[&str]) -> String {
+    let listed: Vec<String> = lines.iter().map(|line| format!("    {line}\n")).collect();
+
+    format!("requires:\n  libraries:\n{}", listed.concat())
+}
+
+/// The record's list of what a library needs.
+fn needs_of(project: &Path, name: &str) -> Vec<String> {
+    strings(&record(project)[name]["needs"])
+}
+
+/// core 0.2.0, in the repository tester/fw-core.
+fn core_from_repository(root: &Path, version: &str) -> PathBuf {
+    lib_at(
+        root,
+        &format!("core-{version}"),
+        "core",
+        version,
+        "repository: https://github.com/tester/fw-core\n",
+    )
+}
+
+#[test]
+fn the_library_from_the_repository_a_requirement_names_meets_it_whatever_its_name() {
+    let root = tempfile::tempdir().unwrap();
+    let disk = root.path().join("disk");
+    let core = core_from_repository(&disk, "0.2.0");
+
+    for need in [
+        "- tester/fw-core@v0.2.0",
+        "- tester/fw-core",
+        "- source: tester/fw-core\n      minimum: 0.2.0",
+    ] {
+        let project = stm32_project(&root.path().join(need.len().to_string()));
+        let addon = lib_at(
+            &disk,
+            &need.len().to_string(),
+            "addon",
+            "1.0.0",
+            &needing(&[need]),
+        );
+
+        installed(&project, &core, "core");
+
+        let (code, ui) = run(offline(), &request(&project, &[&addon]));
+
+        assert_eq!(code, 0, "{need}: {}\n{}", ui.out(), ui.err());
+        assert!(
+            ui.out()
+                .contains("core 0.2.0 is already in this project, kept"),
+            "{need}: {}",
+            ui.out()
+        );
+        assert!(!ui.out().contains("Fetching"), "{need}: {}", ui.out());
+        // What it needs is what is installed, so core cannot go out from under it.
+        assert_eq!(needs_of(&project, "addon"), ["core"], "{need}");
+
+        let (code, ui) = uninstall(&project, &["core"]);
+
+        assert_eq!(code, 2, "{need}: {}", ui.out());
+        assert!(
+            ui.err().contains("addon needs core"),
+            "{need}: {}",
+            ui.err()
+        );
+    }
+}
+
+#[test]
+fn the_library_from_the_repository_given_on_the_line_meets_a_requirement() {
+    let root = tempfile::tempdir().unwrap();
+    let disk = root.path().join("disk");
+    let core = core_from_repository(&disk, "0.2.0");
+    let addon = lib_at(
+        &disk,
+        "addon",
+        "addon",
+        "1.0.0",
+        &needing(&["- tester/fw-core@v0.2.0"]),
+    );
+
+    for (tag, given) in [("a", [&addon, &core]), ("b", [&core, &addon])] {
+        let project = stm32_project(&root.path().join(tag));
+        let given: Vec<&Path> = given.iter().map(|path| path.as_path()).collect();
+        let (code, ui) = run(offline(), &request(&project, &given));
+
+        assert_eq!(code, 0, "{tag}: {}\n{}", ui.out(), ui.err());
+        assert!(project.join("core/inc/core.h").is_file(), "{tag}");
+        assert_eq!(needs_of(&project, "addon"), ["core"], "{tag}");
+    }
+}
+
+#[test]
+fn a_library_found_through_its_repository_still_has_to_be_new_enough() {
+    let root = tempfile::tempdir().unwrap();
+    let project = stm32_project(root.path());
+    let disk = root.path().join("disk");
+    let addon = lib_at(
+        &disk,
+        "addon",
+        "addon",
+        "1.0.0",
+        &needing(&["- source: tester/fw-core\n      minimum: 0.3.0"]),
+    );
+
+    installed(&project, &core_from_repository(&disk, "0.2.0"), "core");
+
+    let (code, ui) = run(offline(), &request(&project, &[&addon]));
+
+    assert_eq!(code, 2, "{}", ui.out());
+    // Too old, which is not missing: named with its version, and a newer one looked for.
+    assert!(ui.out().contains("Fetching tester/fw-core"), "{}", ui.out());
+    assert!(
+        ui.err().contains("core 0.2.0 is the one in this project"),
+        "{}",
+        ui.err()
+    );
+    assert!(!ui.err().contains("not in this project"), "{}", ui.err());
+    assert!(!record(&project).contains_key("addon"));
+}
+
+#[test]
+fn a_fetched_library_already_installed_under_its_name_is_kept_not_put_back() {
+    let root = tempfile::tempdir().unwrap();
+    let project = stm32_project(root.path());
+    let disk = root.path().join("disk");
+    // Installed from somewhere else, at a version newer than the repository's.
+    let mine = lib_at(
+        &disk,
+        "mine",
+        "example",
+        "9.9.9",
+        "repository: https://github.com/me/fork\n",
+    );
+    let theirs = lib_at(&root.path().join("gh"), "x", "example", "1.4.0", "");
+    let addon = lib_at(
+        &disk,
+        "addon",
+        "addon",
+        "1.0.0",
+        &needing(&["- someone/lib-example"]),
+    );
+    let (client, server) = github(&[("someone/lib-example", &theirs)]);
+
+    installed(&project, &mine, "example");
+
+    let (code, ui) = run(client, &request(&project, &[&addon]));
+
+    assert_eq!(code, 0, "{}\n{}", ui.out(), ui.err());
+    assert_eq!(server.repos_asked(), ["someone/lib-example"]);
+    assert!(
+        ui.out()
+            .contains("example 9.9.9 is already in this project, kept"),
+        "{}",
+        ui.out()
+    );
+    assert_eq!(record(&project)["example"]["version"], "9.9.9");
+    assert_eq!(needs_of(&project, "addon"), ["example"]);
+}
+
+#[test]
+fn a_record_that_needs_a_repository_by_name_still_keeps_the_library_from_it() {
+    // libNIMA 1.0.0 recorded the repository's name as what was needed.
+    let root = tempfile::tempdir().unwrap();
+    let project = stm32_project(root.path());
+    let gh = lib_at(&root.path().join("gh"), "x", "example", "1.4.0", "");
+    let addon = lib_at(
+        &root.path().join("disk"),
+        "addon",
+        "addon",
+        "1.0.0",
+        &needing(&["- someone/lib-example"]),
+    );
+    let (client, _server) = github(&[("someone/lib-example", &gh)]);
+
+    assert_eq!(run(client, &request(&project, &[&addon])).0, 0);
+
+    let path = project.join(".libnima.json");
+    let text = read(&path).replace("\"example\"\n", "\"lib-example\"\n");
+    write(&path, &text);
+    assert_eq!(needs_of(&project, "addon"), ["lib-example"]);
+
+    let (code, ui) = uninstall(&project, &["example"]);
+
+    assert_eq!(code, 2, "{}", ui.out());
+    assert!(ui.err().contains("addon needs example"), "{}", ui.err());
+}
+
+#[test]
+fn what_is_needed_is_said_by_name_and_version_and_the_zips_by_repository() {
+    let root = tempfile::tempdir().unwrap();
+    let project = stm32_project(root.path());
+    let pmic = lib_at(
+        &root.path().join("disk"),
+        "pmic",
+        "gpmic",
+        "1.0.0",
+        &format!(
+            "repository: https://github.com/tester/fw-pmic\n{}",
+            needing(&["- source: tester/core-fw@v0.2.0\n      minimum: 0.2.0\n      name: gcore"])
+        ),
+    );
+
+    let (code, ui) = run(offline(), &request(&project, &[&pmic]));
+    let said = format!("{}\n{}", ui.out(), ui.err());
+
+    assert_eq!(code, 2);
+    assert!(said.contains("gpmic needs gcore >= 0.2.0"), "{said}");
+    assert!(!said.contains("gcore@v0.2.0"), "{said}");
+    assert!(said.contains("Fetching tester/core-fw@v0.2.0"), "{said}");
+    assert!(
+        said.contains("libnima fw-pmic-main.zip core-fw-0.2.0.zip"),
+        "{said}"
+    );
+}
+
+#[test]
+fn an_update_that_closes_a_circle_is_refused_and_a_circle_named_in_full_goes() {
+    let root = tempfile::tempdir().unwrap();
+    let project = stm32_project(root.path());
+    let disk = root.path().join("disk");
+    let alone = lib_at(&disk, "ca0", "ca", "1.0.0", "");
+    let ca = lib_at(&disk, "ca", "ca", "1.0.0", &needing(&["- cb >= 1.0.0"]));
+    let cb = lib_at(&disk, "cb", "cb", "1.0.0", &needing(&["- ca >= 1.0.0"]));
+
+    installed(&project, &alone, "ca");
+    installed(&project, &cb, "cb");
+
+    let before = read(project.join(".libnima.json"));
+    let (code, ui) = run(offline(), &request(&project, &[&ca]));
+
+    assert_eq!(code, 2, "{}", ui.out());
+    assert!(ui.err().contains("ca -> cb -> ca"), "{}", ui.err());
+    assert_eq!(read(project.join(".libnima.json")), before);
+
+    // As 1.0.0 let it in: ca needs cb, and cb needs ca.
+    let path = project.join(".libnima.json");
+    let mut data: serde_json::Value = serde_json::from_str(&before).unwrap();
+    data["libraries"]["ca"]["needs"] = serde_json::json!(["cb"]);
+    write(&path, &serde_json::to_string_pretty(&data).unwrap());
+
+    let (code, ui) = uninstall(&project, &["ca"]);
+
+    assert_eq!(code, 2, "{}", ui.out());
+    assert!(ui.err().contains("cb needs ca"), "{}", ui.err());
+
+    let (code, ui) = uninstall(&project, &["cb", "ca"]);
+
+    assert_eq!(code, 0, "{}\n{}", ui.out(), ui.err());
+    assert!(record(&project).is_empty());
+}
+
+#[test]
+fn one_library_given_twice_is_refused() {
+    let root = tempfile::tempdir().unwrap();
+    let project = stm32_project(root.path());
+    let disk = root.path().join("disk");
+    let old = lib_at(&disk, "a9", "liba", "0.9.0", "");
+    let new = lib_at(&disk, "a10", "liba", "0.10.0", "");
+    let user = lib_at(&disk, "b", "libb", "1.0.0", &needing(&["- liba >= 0.10.0"]));
+
+    for check_only in [false, true] {
+        let mut asked = request(&project, &[&user, &old, &new]);
+        asked.check_only = check_only;
+
+        let (code, ui) = run(offline(), &asked);
+
+        assert_ne!(code, 0, "{}", ui.out());
+        assert!(
+            ui.err()
+                .contains("liba is given 2 times in this run, at 0.9.0 and 0.10.0"),
+            "{}",
+            ui.err()
+        );
+        assert!(!ui.err().contains("newest"), "{}", ui.err());
+        assert!(record(&project).is_empty());
+    }
+
+    assert_eq!(run(offline(), &request(&project, &[&user, &new])).0, 0);
+}
+
+#[test]
+fn only_a_library_that_came_in_for_the_one_taken_out_is_named() {
+    let root = tempfile::tempdir().unwrap();
+    let disk = root.path().join("disk");
+    let core = lib_at(&disk, "core", "core", "1.0.0", "");
+    let addon = lib_at(
+        &disk,
+        "addon",
+        "addon",
+        "1.0.0",
+        &needing(&["- core >= 1.0.0"]),
+    );
+    let names_core = |ui: &Watched| ui.out().contains("--uninstall core");
+
+    // Installed on its own: the user's, never offered to go.
+    let first = stm32_project(&root.path().join("first"));
+    installed(&first, &core, "core");
+    installed(&first, &addon, "addon");
+    let (code, ui) = uninstall(&first, &["addon"]);
+    assert_eq!(code, 0);
+    assert!(!names_core(&ui), "{}", ui.out());
+
+    // Given with it to meet its requirement: it came in for it.
+    let second = stm32_project(&root.path().join("second"));
+    assert_eq!(run(offline(), &request(&second, &[&addon, &core])).0, 0);
+    assert_eq!(strings(&record(&second)["core"]["brought_by"]), ["addon"]);
+    let third = root.path().join("third");
+    copy_tree(&second, &third);
+
+    let (code, ui) = uninstall(&second, &["addon"]);
+    assert_eq!(code, 0);
+    assert!(names_core(&ui), "{}", ui.out());
+
+    // Taken out in the same run: nothing is left to name.
+    let (code, ui) = uninstall(&third, &["core", "addon"]);
+    assert_eq!(code, 0, "{}", ui.err());
+    assert!(!names_core(&ui), "{}", ui.out());
+}
+
+#[test]
+fn an_install_below_what_an_installed_library_needs_is_refused() {
+    let root = tempfile::tempdir().unwrap();
+    let disk = root.path().join("disk");
+    let new = lib_at(&disk, "a1", "liba", "1.0.0", "");
+    let old = lib_at(&disk, "a09", "liba", "0.9.0", "");
+    let user = lib_at(&disk, "b", "libb", "1.0.0", &needing(&["- liba >= 1.0.0"]));
+
+    let project = stm32_project(&root.path().join("needed"));
+    assert_eq!(run(offline(), &request(&project, &[&user, &new])).0, 0);
+    let before = read(project.join(".libnima.json"));
+
+    for check_only in [true, false] {
+        let mut asked = request(&project, &[&old]);
+        asked.check_only = check_only;
+
+        let (code, ui) = run(offline(), &asked);
+
+        assert_ne!(code, 0, "{}", ui.out());
+        assert!(
+            ui.err()
+                .contains("libb needs liba >= 1.0.0, and liba 0.9.0 would not do"),
+            "{}",
+            ui.err()
+        );
+        assert_eq!(read(project.join(".libnima.json")), before);
+    }
+
+    // Nothing needs it: it goes back, and that is said.
+    let alone = stm32_project(&root.path().join("alone"));
+    installed(&alone, &new, "liba");
+    let ui = installed(&alone, &old, "liba");
+    assert_eq!(record(&alone)["liba"]["version"], "0.9.0");
+    assert!(
+        ui.out()
+            .contains("liba 1.0.0 is in this project, and liba 0.9.0 goes in over it"),
+        "{}",
+        ui.out()
+    );
+}
+
 // ----------------------------------------------------------------------------
 // Parts a library has for the choosing
 // ----------------------------------------------------------------------------
@@ -929,9 +1401,9 @@ fn an_option_no_library_has_is_refused_before_anything() {
 
     assert_eq!(code, 2);
     assert!(!project.join("demo").exists());
+    // Said of the library by its name, as it is not installed here yet.
     assert!(
-        ui.err()
-            .contains("No option called lsf. What is installed here has: lfs."),
+        ui.err().contains("No option called lsf. demo has lfs."),
         "{}",
         ui.err()
     );
@@ -1064,6 +1536,66 @@ fn with_key_step(root: &Path) -> PathBuf {
         ),
         &[],
     )
+}
+
+#[test]
+fn the_flags_reach_a_library_that_comes_in_as_a_requirement() {
+    let root = tempfile::tempdir().unwrap();
+    let example = library(
+        &root.path().join("gh"),
+        "example",
+        &format!(
+            "version: 1.0.0\n{DEMO_CODE}options:\n  uptime:\n    description: Count the time up\n    headers: [inc/up.h]\n\
+             run:\n  - label: make-id\n    description: Make an id\n    command: {}\n    unless: example_id.h\n",
+            writes("example_id.h")
+        ),
+        &[("inc/up.h", "")],
+    );
+    let addy = lib_at(
+        &root.path().join("disk"),
+        "addy",
+        "addy",
+        "1.0.0",
+        &needing(&["- source: someone/example\n      name: example"]),
+    );
+
+    // --no-run and --with name the step and the option of the library it needs.
+    let project = stm32_project(&root.path().join("one"));
+    let (client, _server) = github(&[("someone/example", &example)]);
+    let mut asked = request(&project, &[&addy]);
+    asked.yes = true;
+    asked.run_off = vec!["make-id".to_string()];
+    asked.with_options = vec!["uptime".to_string()];
+
+    let (code, ui) = run(client, &asked);
+
+    assert_eq!(code, 0, "{}\n{}", ui.out(), ui.err());
+    assert!(
+        ui.out().contains("skipped, as asked with --no-run make-id"),
+        "{}",
+        ui.out()
+    );
+    assert!(!project.join("example_id.h").exists());
+    assert_eq!(record(&project)["example"]["options"]["uptime"], true);
+
+    // A name no library of the run has is still refused, by the install and by the check.
+    for check_only in [false, true] {
+        let project = stm32_project(&root.path().join(format!("two-{check_only}")));
+        let (client, _server) = github(&[("someone/example", &example)]);
+        let mut asked = request(&project, &[&addy]);
+        asked.with_options = vec!["nothing-like-it".to_string()];
+        asked.check_only = check_only;
+
+        let (code, ui) = run(client, &asked);
+
+        assert_ne!(code, 0, "{}", ui.out());
+        assert!(
+            ui.err().contains("No option called nothing-like-it"),
+            "{}",
+            ui.err()
+        );
+        assert!(record(&project).is_empty());
+    }
 }
 
 fn folder_of(asked: &mut Request) {
@@ -1770,7 +2302,8 @@ fn a_check_writes_nothing_and_says_what_it_finds() {
 
     let (code, ui) = run(offline(), &asked);
 
-    assert_eq!(code, 0, "{}", ui.err());
+    // A CHECK is something to do first, so a script can stop on it: 1, apart from the 2 of a run that went wrong.
+    assert_eq!(code, 1, "{}", ui.err());
     assert_eq!(listing(&project), before, "a check wrote something");
     assert!(
         ui.out()
@@ -1779,6 +2312,20 @@ fn a_check_writes_nothing_and_says_what_it_finds() {
         ui.out()
     );
     assert!(ui.out().contains("CHECK"), "{}", ui.out());
+}
+
+#[test]
+fn a_check_with_nothing_to_do_exits_0() {
+    let root = tempfile::tempdir().unwrap();
+    let project = stm32_project(root.path());
+    let source = library(root.path(), "demo", DEMO_CODE, &[]);
+    let mut asked = request(&project, &[&source]);
+    asked.check_only = true;
+
+    let (code, ui) = run(offline(), &asked);
+
+    assert_eq!(code, 0, "{}\n{}", ui.out(), ui.err());
+    assert!(ui.out().contains("OK"), "{}", ui.out());
 }
 
 #[test]

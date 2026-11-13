@@ -20,7 +20,11 @@ export type Span = { text: string; style: Style };
 /** One line of what a run says. */
 export type Line = Span[];
 
-export type QuestionKind = { type: "text" } | { type: "yesno"; default: boolean };
+export type QuestionKind =
+  | { type: "text" }
+  | { type: "yesno"; default: boolean }
+  /** One of a list, or several when `many`: answered with the names picked, joined by commas. */
+  | { type: "choose"; options: string[]; many: boolean };
 export type Question = { prompt: Line; kind: QuestionKind };
 
 export type Candidate = { platform: Platform; evidence: string };
@@ -43,6 +47,7 @@ export type Project = {
   candidates: Candidate[];
   ides: string[];
   conf_files: string[];
+  overlay_files: string[];
   sketch: boolean;
   installed: InstalledLibrary[];
 };
@@ -103,6 +108,7 @@ export type Choices = {
   platform: Platform | null;
   ide: string | null;
   conf: string | null;
+  overlay: string | null;
   into: string | null;
   sketchbook: string | null;
 };
@@ -119,7 +125,7 @@ export const view = $state({
   opening: false,
   /** Why the folder could not be read. */
   problem: "",
-  choices: { platform: null, ide: null, conf: null, into: null, sketchbook: null } as Choices,
+  choices: { platform: null, ide: null, conf: null, overlay: null, into: null, sketchbook: null } as Choices,
   items: [] as Item[],
   /** The libraries GitHub has newer versions of, by name. */
   newer: {} as Record<string, string>,
@@ -139,8 +145,8 @@ let nextId = 1;
 
 /** The options of the engine that every request carries. */
 function asked(): Record<string, unknown> {
-  const { platform, ide, conf, into, sketchbook } = view.choices;
-  return { project: view.project?.folder ?? "", platform, ide, conf, into, sketchbook, key: view.key };
+  const { platform, ide, conf, overlay, into, sketchbook } = view.choices;
+  return { project: view.project?.folder ?? "", platform, ide, conf, overlay, into, sketchbook, key: view.key };
 }
 
 function isBlank(line: Line): boolean {
@@ -192,7 +198,7 @@ export async function openProject(folder: string): Promise<void> {
       clearLog();
     }
     view.project = project;
-    view.choices = { platform: null, ide: null, conf: null, into: null, sketchbook: null };
+    view.choices = { platform: null, ide: null, conf: null, overlay: null, into: null, sketchbook: null };
     view.items = [];
     view.newer = {};
     rememberProject(project.folder);

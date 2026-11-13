@@ -292,10 +292,7 @@ pub fn integrate(
 
             format!("{}{written}{}", &text[..start], &text[end..])
         }
-        None => format!(
-            "{}{newline}{newline}{written}{newline}",
-            text.trim_end_matches(['\r', '\n'])
-        ),
+        None => blocks::appended(&text, &written, newline),
     };
 
     let saved = backup(cmakelists)?;

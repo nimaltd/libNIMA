@@ -42,7 +42,7 @@ use crate::check;
 use crate::detect;
 use crate::download::{self, Client, DownloadError};
 use crate::installer::{self, Held, InstallError, InstallResult, Others, Prepared, Removal};
-use crate::manifest::{self, Dependency, MANIFEST_NAME, Manifest};
+use crate::manifest::{self, Dependency, MANIFEST_NAME, Manifest, version_tuple};
 use crate::paths;
 use crate::platform::{Platform, PlatformArgs, arduino, target_of};
 use crate::record::{self, installed_libraries};
@@ -194,8 +194,9 @@ fn kind_of(path: &Path) -> Kind {
     }
 }
 
+/// An address, on the web or for SSH: never a path, and never a name with a ref after its @.
 fn is_url(given: &str) -> bool {
-    given.starts_with("http://") || given.starts_with("https://")
+    download::is_address(given)
 }
 
 const NOT_A_ZIP: &str = "is not a .zip. Give the zip GitHub offers under Code, Download ZIP, or the folder it unpacks to.";
@@ -213,7 +214,15 @@ fn peek(
         let path = expand_user(given);
 
         match kind_of(&path) {
-            Kind::Zip => download::peek_zip(&path),
+            // One that cannot be opened is not one without a library in it: it is said so, as it is to be had again.
+            Kind::Zip => match download::zip_problem(&path) {
+                Some(why) => {
+                    return Err(PlanError(format!(
+                        "{given} cannot be read as a zip ({why}). It may be an incomplete download: download it again."
+                    )));
+                }
+                None => download::peek_zip(&path),
+            },
             Kind::Folder => {
                 let root = download::find_root(&paths::resolve(&path)).unwrap_or(path.clone());
 
@@ -336,6 +345,13 @@ pub(crate) fn choose_platform(
         };
 
         let data = node.as_map().expect("parse() gives a mapping");
+
+        // Before the platform: one this libNIMA does not know may be one a newer libNIMA has, and the way forward is to
+        // update, not to name another platform.
+        if let Err(error) = manifest::check_version(data) {
+            ui.error(&format!("{given}: {}", error.message));
+            return None;
+        }
 
         match manifest::platforms_of(data) {
             Ok(Some(platforms)) => {
@@ -469,6 +485,10 @@ pub(crate) fn check_platform_args(args: &PlatformArgs, chosen: Platform, ui: &mu
         given.push(("--conf", Platform::Zephyr));
     }
 
+    if args.overlay.is_some() {
+        given.push(("--overlay", Platform::Zephyr));
+    }
+
     if args.into.is_some() {
         given.push(("--into", Platform::Arduino));
     }
@@ -502,6 +522,9 @@ pub struct Session<'a> {
     /// Every temporary folder made on the way, removed when the run ends.
     staged: Vec<PathBuf>,
     choices: StepChoices,
+    /// The options --with and --without name, for a library that comes in as a requirement as much as one named.
+    turn_on: Vec<String>,
+    turn_off: Vec<String>,
     ui: &'a mut dyn Ui,
 }
 
@@ -533,11 +556,21 @@ impl<'a> Session<'a> {
                 let (moved, from) = installer::migrate(&root, target.as_ref());
 
                 if !moved.is_empty() {
-                    let shown: Vec<String> = moved.iter().map(|path| show(path, &root)).collect();
+                    // Each with the copy that holds it as it was, the one the run keeps of it.
+                    let shown: Vec<String> = moved
+                        .iter()
+                        .map(|(path, copy)| {
+                            format!(
+                                "{}, saved first as {}",
+                                show(path, &root),
+                                show(copy, &root)
+                            )
+                        })
+                        .collect();
 
                     ui.say(report::note(format!(
-                        "Moved over from {from} to libnima: {}. Each was saved first as a .bak.",
-                        shown.join(", ")
+                        "Moved over from {from} to libnima: {}.",
+                        shown.join("; ")
                     )));
                 }
             }
@@ -558,6 +591,8 @@ impl<'a> Session<'a> {
             project_root,
             staged: Vec::new(),
             choices: StepChoices::default(),
+            turn_on: Vec::new(),
+            turn_off: Vec::new(),
             ui,
         })
     }
@@ -823,17 +858,11 @@ impl<'a> Session<'a> {
 
     /// Choose the options of every library named in the run.
     ///
-    /// A name given to --with or --without that none of them has is refused before anything is asked or installed, since it
-    /// is almost always a typo, and going ahead without it would install something other than what was asked for. None, or
-    /// the exit code to stop with.
+    /// A name given to --with or --without, --run or --no-run, that no library of the run has is refused before anything is
+    /// installed, since it is almost always a typo, and going ahead without it would install something other than what was
+    /// asked for. They apply to a library that comes in as a requirement as much as to one named, so when the libraries named
+    /// need others, the names are checked once those are known too, see unknown_names(). None, or the exit code to stop with.
     fn settle_options(&mut self, requested: &mut [Source], request: &Request) -> Option<i32> {
-        let offered = sorted(requested.iter().flat_map(|source| {
-            source
-                .library()
-                .options
-                .iter()
-                .map(|option| option.name.clone())
-        }));
         let both = sorted(
             request
                 .with_options
@@ -850,58 +879,6 @@ impl<'a> Session<'a> {
             return Some(2);
         }
 
-        let unknown = sorted(
-            request
-                .with_options
-                .iter()
-                .chain(&request.without_options)
-                .filter(|name| !offered.contains(name))
-                .cloned(),
-        );
-
-        if !unknown.is_empty() {
-            let has = if offered.is_empty() {
-                "What is installed here has no options.".to_string()
-            } else {
-                format!("What is installed here has: {}.", offered.join(", "))
-            };
-
-            self.ui
-                .error(&format!("No option called {}. {has}", unknown.join(", ")));
-            return Some(2);
-        }
-
-        for source in requested.iter_mut() {
-            let root = source
-                .project_root
-                .clone()
-                .unwrap_or_else(|| self.project_root.clone());
-            self.choose_options(
-                source,
-                &root,
-                &request.with_options,
-                &request.without_options,
-                true,
-            );
-        }
-
-        self.settle_run(requested, request)
-    }
-
-    /// Check --run and --no-run against the steps of the libraries named, the way --with and --without are checked. None,
-    /// or the exit code to stop with.
-    fn settle_run(&mut self, requested: &[Source], request: &Request) -> Option<i32> {
-        self.choices = StepChoices {
-            turn_on: request.run_on.clone(),
-            turn_off: request.run_off.clone(),
-            assume_yes: request.yes,
-        };
-
-        let offered = sorted(
-            requested
-                .iter()
-                .flat_map(|source| source.library().run.iter().map(|step| step.label.clone())),
-        );
         let both = sorted(
             request
                 .run_on
@@ -918,6 +895,98 @@ impl<'a> Session<'a> {
             return Some(2);
         }
 
+        self.turn_on = request.with_options.clone();
+        self.turn_off = request.without_options.clone();
+        self.choices = StepChoices {
+            turn_on: request.run_on.clone(),
+            turn_off: request.run_off.clone(),
+            assume_yes: request.yes,
+        };
+
+        // Nothing else comes in: the libraries named are all there is, and a name none of them has is refused before
+        // anything is asked.
+        let may_bring = requested.iter().any(|source| {
+            let library = source.library();
+
+            !library.requires.libraries.is_empty()
+                || library
+                    .options
+                    .iter()
+                    .any(|option| !option.libraries.is_empty())
+        });
+
+        if !may_bring && let Some(code) = self.unknown_names(requested, request) {
+            return Some(code);
+        }
+
+        for source in requested.iter_mut() {
+            let root = source
+                .project_root
+                .clone()
+                .unwrap_or_else(|| self.project_root.clone());
+            self.choose_options(
+                source,
+                &root,
+                &request.with_options,
+                &request.without_options,
+                true,
+            );
+        }
+
+        None
+    }
+
+    /// Check what --with, --without, --run and --no-run name against the options and steps of every library of the run,
+    /// those that come in as requirements included. None, or the exit code to stop with.
+    pub(crate) fn unknown_names(&mut self, sources: &[Source], request: &Request) -> Option<i32> {
+        let offered = sorted(sources.iter().flat_map(|source| {
+            source
+                .library()
+                .options
+                .iter()
+                .map(|option| option.name.clone())
+        }));
+        let unknown = sorted(
+            request
+                .with_options
+                .iter()
+                .chain(&request.without_options)
+                .filter(|name| !offered.contains(name))
+                .cloned(),
+        );
+
+        if !unknown.is_empty() {
+            // Said of the libraries of the run, by name: none of them need be installed yet.
+            let has: Vec<String> = sources
+                .iter()
+                .filter(|source| !source.library().options.is_empty())
+                .map(|source| {
+                    let library = source.library();
+                    let names: Vec<&str> = library
+                        .options
+                        .iter()
+                        .map(|option| option.name.as_str())
+                        .collect();
+
+                    format!("{} has {}", library.name, names.join(", "))
+                })
+                .collect();
+            let has = if has.is_empty() {
+                "No library of this run has options.".to_string()
+            } else {
+                format!("{}.", has.join("; "))
+            };
+
+            self.ui
+                .error(&format!("No option called {}. {has}", unknown.join(", ")));
+            return Some(2);
+        }
+
+        let offered = sorted(
+            sources
+                .iter()
+                .flat_map(|source| source.library().run.iter().map(|step| step.label.clone())),
+        );
         let unknown = sorted(
             request
                 .run_on
@@ -947,16 +1016,28 @@ impl<'a> Session<'a> {
     /// At the ref the needing library names, or the default branch. A library with no libnima.yml of its own comes with the
     /// one the needing library carries for it. An error when it cannot be had, saying how to get it without the internet,
     /// since a missing connection is the usual reason.
+    ///
+    /// `have` is the version in the project when there is one, too old: what is said names it, as an update and not an
+    /// install. The zips the advice names are named as GitHub's Download ZIP names them, after the repositories.
     fn fetch_dependency(
         &mut self,
         dependency: &Dependency,
         needed_by: &str,
         needer_root: &Path,
+        needer_repository: &str,
+        have: Option<&str>,
     ) -> Result<Source, PlanError> {
-        self.ui.say(report::note(format!(
-            "{needed_by} needs {dependency}. Fetching {} ...",
-            dependency.fetch()
-        )));
+        self.ui.say(report::note(match have {
+            Some(have) => format!(
+                "{needed_by} needs {dependency}, newer than the {} {have} in this project. Fetching {} ...",
+                dependency.name,
+                dependency.fetch()
+            ),
+            None => format!(
+                "{needed_by} needs {dependency}. Fetching {} ...",
+                dependency.fetch()
+            ),
+        }));
 
         let carried = match &dependency.manifest {
             Some(carried) => Some(std::fs::read(needer_root.join(carried)).map_err(|error| {
@@ -972,12 +1053,28 @@ impl<'a> Session<'a> {
             .client
             .fetch(&dependency.fetch(), None, carried.as_deref())
             .map_err(|error| {
+                let what = match have {
+                    Some(have) => format!(
+                        "{needed_by} needs {dependency}, but {} {have} is the one in this project, and a newer one could \
+                         not be fetched",
+                        dependency.name
+                    ),
+                    None => format!(
+                        "{needed_by} needs {dependency}, which is not in this project, and it could not be fetched"
+                    ),
+                };
+
                 PlanError(format!(
-                    "{needed_by} needs {dependency}, which is not in this project, and it could not be fetched: {}
-                     Without the internet, download {name} as well, and give both zips on one line:
-                         libnima {needed_by}-main.zip {name}-main.zip",
+                    "{what}: {}\nWithout the internet, download {name} as well, and give both zips on one line:\n    \
+                     libnima {first} {second}",
                     error.message,
                     name = dependency.name,
+                    first = zip_name(needer_repository, None, needed_by),
+                    second = zip_name(
+                        &dependency.source,
+                        dependency.reference.as_deref(),
+                        &dependency.name
+                    ),
                 ))
             })?;
 
@@ -1000,6 +1097,17 @@ impl<'a> Session<'a> {
         Ok(source)
     }
 
+    /// What the libraries of a check need, worked out as an install of them would, fetching what it would fetch and writing
+    /// nothing: why the install would be refused, or None when it would not.
+    pub(crate) fn requirements_problem(&mut self, sources: &mut Vec<Source>) -> Option<String> {
+        let requested = sources.len();
+
+        match self.plan(sources, requested) {
+            Ok(_) => None,
+            Err(PlanError(message)) => Some(message),
+        }
+    }
+
     /// Put the installs in order: every library after the libraries it needs.
     ///
     /// A library that is needed and already in the project at a version that will do is left alone, and nobody is asked
@@ -1016,6 +1124,28 @@ impl<'a> Session<'a> {
         let recorded = installed_libraries(&elsewhere);
         let mut planned: Vec<(String, Option<String>)> = Vec::new();
         let mut order = Vec::new();
+
+        // One library given twice: which one was meant cannot be told, so neither is taken.
+        for (at, source) in sources[..requested].iter().enumerate() {
+            let name = &source.library().name;
+            let twins: Vec<&str> = sources[..requested]
+                .iter()
+                .filter(|other| other.library().name == *name)
+                .map(|other| other.library().version.as_str())
+                .collect();
+
+            if twins.len() > 1
+                && sources[..at]
+                    .iter()
+                    .all(|earlier| earlier.library().name != *name)
+            {
+                return Err(PlanError(format!(
+                    "{name} is given {} times in this run, at {}. Give it once.",
+                    twins.len(),
+                    twins.join(" and ")
+                )));
+            }
+        }
 
         for index in 0..requested {
             let name = sources[index].library().name.clone();
@@ -1046,6 +1176,8 @@ impl<'a> Session<'a> {
             planned.push((name, Some(sources[index].library().version.clone())));
         }
 
+        self.check_installed_needs(&order, sources, &recorded)?;
+
         Ok(order)
     }
 
@@ -1070,7 +1202,14 @@ impl<'a> Session<'a> {
             .cloned()
             .collect();
 
-        for dependency in dependencies {
+        for mut dependency in dependencies {
+            // By the name it goes by here: a library from the repository it names counts, whatever it is called.
+            let wanted = name_for(&dependency, recorded, sources);
+
+            if wanted != dependency.name {
+                self.rename(sources, index, &mut dependency, &wanted);
+            }
+
             if chain.contains(&dependency.name) {
                 let mut circle = chain.clone();
                 circle.push(dependency.name.clone());
@@ -1113,6 +1252,19 @@ impl<'a> Session<'a> {
             // asked.
             if have.is_some() && given.is_none() && dependency.satisfied_by(have_version.as_deref())
             {
+                // Kept as it is, it still needs what its record says: one of those leading back here is a circle.
+                let in_run: Vec<String> = sources
+                    .iter()
+                    .map(|source| source.library().name.clone())
+                    .collect();
+
+                if let Some(circle) = recorded_circle(&chain, &dependency.name, recorded, &in_run) {
+                    return Err(PlanError(format!(
+                        "These libraries need each other in a circle: {}",
+                        circle.join(" -> ")
+                    )));
+                }
+
                 self.ui.say(report::note(format!(
                     "{name} needs {dependency}. {} {} is already in this project, kept.",
                     dependency.name,
@@ -1125,14 +1277,57 @@ impl<'a> Session<'a> {
             let other = match given {
                 Some(other) => other,
                 None => {
-                    let mut source = self.fetch_dependency(&dependency, &name, &needer_root)?;
+                    let needer_repository = sources[index].library().repository.clone();
+                    let mut source = self.fetch_dependency(
+                        &dependency,
+                        &name,
+                        &needer_root,
+                        &needer_repository,
+                        have.as_ref().and(have_version.as_deref()),
+                    )?;
 
-                    // Its options before what it needs, since they can bring more.
-                    self.choose_options(&mut source, elsewhere, &[], &[], false);
+                    // Its options before what it needs, since they can bring more. --with and --without reach it as they
+                    // reach a library named.
+                    let (turn_on, turn_off) = (self.turn_on.clone(), self.turn_off.clone());
+                    self.choose_options(&mut source, elsewhere, &turn_on, &turn_off, false);
                     sources.push(source);
                     sources.len() - 1
                 }
             };
+
+            // What it needs, by the name the library it got has, so the record names what is installed.
+            let actual = sources[other].library().name.clone();
+            let mut installed = have;
+
+            if actual != dependency.name {
+                self.rename(sources, index, &mut dependency, &actual);
+
+                // Fetched, it is a library already in the project under that name. One at a version that will do is left
+                // alone, never put back to the one fetched.
+                let found = recorded
+                    .get(&actual)
+                    .filter(|entry| entry.is_object())
+                    .cloned();
+                let found_version = found
+                    .as_ref()
+                    .and_then(|entry| entry.get("version"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+
+                if given.is_none()
+                    && found.is_some()
+                    && dependency.satisfied_by(found_version.as_deref())
+                {
+                    self.ui.say(report::note(format!(
+                        "{name} needs {dependency}. {actual} {} is already in this project, kept.",
+                        found_version.as_deref().unwrap_or_default()
+                    )));
+                    planned.push((actual, found_version));
+                    continue;
+                }
+
+                installed = installed.or(found);
+            }
 
             if !paths::same(elsewhere, &self.project_root) && !sources[other].in_place {
                 sources[other].project_root = Some(elsewhere.to_path_buf());
@@ -1141,10 +1336,17 @@ impl<'a> Session<'a> {
             let version = sources[other].library().version.clone();
 
             if !dependency.satisfied_by(Some(&version)) {
-                return Err(PlanError(format!(
-                    "{name} needs {dependency}, and the newest {} to be had is {version}.",
-                    dependency.name
-                )));
+                // A version that cannot be compared is not an old one: what is wrong with it is said.
+                return Err(PlanError(match manifest::version_problem(&version) {
+                    Some(why) if dependency.minimum.is_some() => format!(
+                        "{name} needs {dependency}, and {}'s version cannot be compared with that. {why}.",
+                        dependency.name
+                    ),
+                    _ => format!(
+                        "{name} needs {dependency}, and the newest {} to be had is {version}.",
+                        dependency.name
+                    ),
+                }));
             }
 
             // What it needs comes before it.
@@ -1159,8 +1361,88 @@ impl<'a> Session<'a> {
                 source: other,
                 needed_by: Some(name.clone()),
                 dependency: Some(dependency.clone()),
-                installed: have,
+                installed,
             });
+        }
+
+        Ok(())
+    }
+
+    /// Call what a library of the run needs by the name it goes by in the project, in its manifest too, so the record's
+    /// needs and what is said name the library as it is installed.
+    fn rename(
+        &mut self,
+        sources: &mut [Source],
+        index: usize,
+        dependency: &mut Dependency,
+        name: &str,
+    ) {
+        if let Some(library) = sources[index].library.as_mut() {
+            library.rename_dependency(dependency, name);
+        }
+
+        dependency.name = name.to_string();
+    }
+
+    /// What the libraries already in the project need of those on their way in.
+    ///
+    /// An installed library whose record says it needs one of them at a version the run would go below stops the run before
+    /// anything is written, naming it, since the build would break under it. A library going back to an older version that
+    /// nothing objects to goes in, and that is said, so it is not missed.
+    fn check_installed_needs(
+        &mut self,
+        order: &[Step],
+        sources: &[Source],
+        recorded: &Map<String, Value>,
+    ) -> Result<(), PlanError> {
+        let incoming: Vec<&str> = order
+            .iter()
+            .map(|step| sources[step.source].library().name.as_str())
+            .collect();
+
+        for step in order {
+            let library = sources[step.source].library();
+            let new = version_tuple(&library.version);
+
+            for (other, entry) in recorded
+                .iter()
+                .filter(|(other, entry)| entry.is_object() && !incoming.contains(&other.as_str()))
+            {
+                let Some(minimum) = entry
+                    .get("minimums")
+                    .and_then(|minimums| minimums.get(&library.name))
+                    .and_then(Value::as_str)
+                else {
+                    continue;
+                };
+
+                if let (Some(want), Some(have)) = (version_tuple(minimum), new)
+                    && have < want
+                {
+                    return Err(PlanError(format!(
+                        "{other} needs {name} >= {minimum}, and {name} {version} would not do. Update or uninstall {other} \
+                         first.",
+                        name = library.name,
+                        version = library.version
+                    )));
+                }
+            }
+
+            let before = recorded
+                .get(&library.name)
+                .and_then(|entry| entry.get("version"))
+                .and_then(Value::as_str);
+
+            if let Some(before) = before
+                && let (Some(old), Some(new)) = (version_tuple(before), new)
+                && new < old
+            {
+                self.ui.say(report::note(format!(
+                    "{name} {before} is in this project, and {name} {version} goes in over it, an older version.",
+                    name = library.name,
+                    version = library.version
+                )));
+            }
         }
 
         Ok(())
@@ -1463,7 +1745,11 @@ impl<'a> Session<'a> {
             &library.version,
             &library.description,
         ));
-        self.ui.say(report::note(library.summary()));
+        let summary = library.summary();
+
+        if !summary.is_empty() {
+            self.ui.say(report::note(summary));
+        }
 
         let findings = self.target.check(library, &root, self.ui);
         say_requirements(&findings, self.ui);
@@ -1503,7 +1789,23 @@ impl<'a> Session<'a> {
         };
 
         match result {
-            Ok(result) => self.finish(library, &result, &root),
+            Ok(result) => {
+                // Which libraries it came in for: the one that needs it, when this run brought it in for that one. One that
+                // was there already came in for whatever it came in for then, and one installed on its own for none.
+                let brought: Vec<Value> = match (&step.needed_by, &step.installed) {
+                    (None, _) => Vec::new(),
+                    (Some(needed_by), None) => vec![json!(needed_by)],
+                    (Some(_), Some(entry)) => entry
+                        .get("brought_by")
+                        .and_then(Value::as_array)
+                        .cloned()
+                        .unwrap_or_default(),
+                };
+
+                installer::note(&root, &library.name, "brought_by", Value::Array(brought));
+
+                self.finish(library, &result, &root)
+            }
             Err(InstallError(message)) => {
                 self.ui.error(&message);
                 2
@@ -1533,7 +1835,7 @@ impl<'a> Session<'a> {
             self.ui
                 .say(report::note(format!("  {}", self.target.no_project_hint())));
         } else {
-            say_outcomes(&outcomes, self.ui);
+            say_outcomes(&outcomes, project_root, self.ui);
         }
 
         // Nothing at all added it to a build: what is left to the user is said above.
@@ -1572,7 +1874,7 @@ impl<'a> Session<'a> {
 
         let code = self.run_steps(library, result, project_root);
 
-        self.say_next(result, project_root, library, built);
+        self.say_next(result, project_root, library, built, code == 0);
 
         code
     }
@@ -1659,9 +1961,16 @@ impl<'a> Session<'a> {
         1
     }
 
-    /// The last word, which is the one people actually read. Done only when the library is in a build: otherwise what is left
-    /// to do.
-    fn say_next(&mut self, result: &InstallResult, root: &Path, library: &Manifest, built: bool) {
+    /// The last word, which is the one people actually read. Done only when the library is in a build and every step it ran
+    /// finished: otherwise what is left to do.
+    fn say_next(
+        &mut self,
+        result: &InstallResult,
+        root: &Path,
+        library: &Manifest,
+        built: bool,
+        steps_done: bool,
+    ) {
         let header = self
             .target
             .include_line(library, &result.destination, root)
@@ -1669,11 +1978,15 @@ impl<'a> Session<'a> {
 
         self.ui.say(report::blank());
 
-        if built {
+        if built && steps_done {
             self.ui.say(report::good(match header {
                 Some(header) => format!("Done. #include \"{header}\" and you are away."),
                 None => "Done.".to_string(),
             }));
+        } else if !steps_done {
+            self.ui.say(report::warn(
+                "Installed, and a step it runs did not finish, as said above: put that right before you build.",
+            ));
         } else {
             self.ui.say(report::warn(match header {
                 Some(header) => format!(
@@ -1740,6 +2053,19 @@ impl<'a> Session<'a> {
             sources.push(source);
         }
 
+        // A ref is a ref of a repository: given with nothing fetched from GitHub, it would change nothing without a word.
+        if let Some(reference) = &request.reference
+            && !sources
+                .iter()
+                .any(|source| source.origin.get("kind").and_then(Value::as_str) == Some("github"))
+        {
+            self.ui.error(&format!(
+                "--ref {reference} is for a library fetched from GitHub, and none of these is, so it would change nothing. \
+                 Leave it out, or name the library by its repository."
+            ));
+            return 2;
+        }
+
         // Before the plan, since an option taken can bring libraries of its own.
         if let Some(code) = self.settle_options(&mut sources, request) {
             return code;
@@ -1754,6 +2080,11 @@ impl<'a> Session<'a> {
                 return 2;
             }
         };
+
+        // Every library of the run is known now, those it needs among them: what the flags name has to be one of theirs.
+        if let Some(code) = self.unknown_names(&sources, request) {
+            return code;
+        }
 
         let planned = match self.check_all(&order, &sources, request) {
             Ok(planned) => planned,
@@ -1795,7 +2126,7 @@ impl<'a> Session<'a> {
         for name in uninstall_order(names, &self.project_root) {
             self.ui.new_part();
 
-            match installer::uninstall(&self.project_root, &name, self.target.as_mut()) {
+            match installer::uninstall(&self.project_root, &name, self.target.as_mut(), names) {
                 Ok(removal) => say_removal(&removal, &self.project_root, self.ui),
                 Err(InstallError(message)) => {
                     self.ui.error(&message);
@@ -1806,6 +2137,129 @@ impl<'a> Session<'a> {
 
         0
     }
+}
+
+/// The name a library a requirement asks for goes by here.
+///
+/// The requirement's own when a library of that name is installed or in the run. Otherwise that of a library installed, or
+/// in the run, that comes from the repository the requirement names, whatever it is called: the repository its libnima.yml
+/// names, or the one it was fetched from. One in the run comes before one installed, as it goes in anyway. The requirement's
+/// own name when none does, which then has to be fetched.
+fn name_for(dependency: &Dependency, recorded: &Map<String, Value>, sources: &[Source]) -> String {
+    let named = recorded.get(&dependency.name).is_some_and(Value::is_object)
+        || sources
+            .iter()
+            .any(|source| source.library().name == dependency.name);
+
+    let Some(wanted) = manifest::repository_key(&dependency.source).filter(|_| !named) else {
+        return dependency.name.clone();
+    };
+
+    let from = |repository: Option<&str>, origin: Option<&str>| {
+        [repository, origin]
+            .into_iter()
+            .flatten()
+            .filter_map(manifest::repository_key)
+            .any(|key| key == wanted)
+    };
+
+    let in_run = sources.iter().find(|source| {
+        from(
+            Some(source.library().repository.as_str()),
+            source.origin.get("source").and_then(Value::as_str),
+        )
+    });
+
+    if let Some(source) = in_run {
+        return source.library().name.clone();
+    }
+
+    recorded
+        .iter()
+        .filter(|(_, entry)| entry.is_object())
+        .find(|(_, entry)| {
+            from(
+                entry.get("repository").and_then(Value::as_str),
+                entry
+                    .get("origin")
+                    .and_then(|origin| origin.get("source"))
+                    .and_then(Value::as_str),
+            )
+        })
+        .map_or_else(|| dependency.name.clone(), |(name, _)| name.clone())
+}
+
+/// A circle a library kept as it is closes with the run's chain that led to it: its record's needs, and theirs, leading
+/// back into the chain. None when there is none.
+///
+/// A library of the run needs what the run says it needs, not what its record says, so the walk does not go through one:
+/// its own turn in the plan looks there.
+fn recorded_circle(
+    chain: &[String],
+    kept: &str,
+    recorded: &Map<String, Value>,
+    in_run: &[String],
+) -> Option<Vec<String>> {
+    let needs_of = |name: &str| -> Vec<String> {
+        recorded
+            .get(name)
+            .and_then(|entry| entry.get("needs"))
+            .and_then(Value::as_array)
+            .map(|needs| {
+                needs
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let mut paths_left: Vec<Vec<String>> = vec![vec![kept.to_string()]];
+    let mut seen: Vec<String> = vec![kept.to_string()];
+
+    while let Some(path) = paths_left.pop() {
+        let last = path.last().expect("never empty").clone();
+
+        for need in needs_of(&last) {
+            if let Some(at) = chain.iter().position(|name| *name == need) {
+                let mut circle = chain[at..].to_vec();
+                circle.extend(path.iter().cloned());
+                circle.push(need);
+
+                return Some(circle);
+            }
+
+            if in_run.contains(&need) || seen.contains(&need) {
+                continue;
+            }
+
+            seen.push(need.clone());
+
+            let mut longer = path.clone();
+            longer.push(need);
+            paths_left.push(longer);
+        }
+    }
+
+    None
+}
+
+/// The name GitHub's Download ZIP gives a library's zip: its repository's name and the branch, main for the default one,
+/// or the tag without its v, as GitHub names a release's. A library with no repository known goes by its own name.
+fn zip_name(repository: &str, reference: Option<&str>, name: &str) -> String {
+    let repo = download::split_ref(repository)
+        .ok()
+        .filter(|_| !repository.trim().is_empty())
+        .map_or_else(|| name.to_string(), |(_, repo, _)| repo);
+    let at = match reference {
+        Some(reference) => match reference.strip_prefix('v') {
+            Some(rest) if rest.starts_with(|first: char| first.is_ascii_digit()) => rest,
+            _ => reference,
+        },
+        None => "main",
+    };
+
+    format!("{repo}-{at}.zip")
 }
 
 /// The folder the run gives a library of its plan, with --dir or by its name in the window's list, or None.
@@ -1892,7 +2346,11 @@ fn say_files(result: &InstallResult, root: &Path, library: &Manifest, ui: &mut d
     ui.say(report::heading("Files"));
 
     for path in result.installed.iter().chain(&result.placed) {
-        ui.say(item("written", "", show(path, root), Style::Good));
+        if result.unchanged.contains(path) {
+            ui.say(item("same", "as it was", show(path, root), Style::Plain));
+        } else {
+            ui.say(item("written", "", show(path, root), Style::Good));
+        }
     }
 
     for path in &result.yours_created {
@@ -1905,7 +2363,20 @@ fn say_files(result: &InstallResult, root: &Path, library: &Manifest, ui: &mut d
     }
 
     for path in &result.yours_kept {
-        ui.say(item("kept", "yours", show(path, root), Style::Accent));
+        // Its template changed since it was made: said, for the user to compare and take what they want.
+        let note = match result
+            .templates_changed
+            .iter()
+            .find(|(file, _)| file == path)
+        {
+            Some((_, template)) => format!(
+                "yours; {}'s {template} changed since it was made",
+                library.name
+            ),
+            None => "yours".to_string(),
+        };
+
+        ui.say(item("kept", &note, show(path, root), Style::Accent));
     }
 
     // A file that took the user's sections to its new place says so. One with none to take is only an old copy gone, and is
@@ -1998,8 +2469,9 @@ fn say_files(result: &InstallResult, root: &Path, library: &Manifest, ui: &mut d
     }
 }
 
-/// Each project file changed, or left for the user, under its heading.
-pub fn say_outcomes(outcomes: &[Outcome], ui: &mut dyn Ui) {
+/// Each project file changed, or left for the user, under its heading. A copy is named by its path from the project's
+/// folder, so the module's own copy does not read as one of the application's file of the same name.
+pub fn say_outcomes(outcomes: &[Outcome], root: &Path, ui: &mut dyn Ui) {
     ui.say(report::blank());
     ui.say(report::heading("Project"));
 
@@ -2022,8 +2494,7 @@ pub fn say_outcomes(outcomes: &[Outcome], ui: &mut dyn Ui) {
         }
 
         if let Some(backup) = &outcome.backup {
-            let name = backup.file_name().unwrap_or_default().to_string_lossy();
-            ui.say(report::detail(format!("backup: {name}")));
+            ui.say(report::detail(format!("backup: {}", show(backup, root))));
         }
     }
 }
@@ -2081,7 +2552,7 @@ fn say_removal(removal: &Removal, root: &Path, ui: &mut dyn Ui) {
     ));
 
     if !removal.outcomes.is_empty() {
-        say_outcomes(&removal.outcomes, ui);
+        say_outcomes(&removal.outcomes, root, ui);
     }
 
     ui.say(report::blank());
@@ -2104,6 +2575,14 @@ fn say_removal(removal: &Removal, root: &Path, ui: &mut dyn Ui) {
         ));
     }
 
+    // A copy this uninstall made of a file of the project's, the module's USER CODE among them, is the user's, saved.
+    let made_here = |path: &PathBuf| {
+        removal
+            .outcomes
+            .iter()
+            .filter_map(|outcome| outcome.backup.as_ref())
+            .any(|copy| paths::same(copy, path))
+    };
     let others: Vec<&PathBuf> = removal
         .left
         .iter()
@@ -2116,12 +2595,21 @@ fn say_removal(removal: &Removal, root: &Path, ui: &mut dyn Ui) {
         .collect();
 
     for path in &others {
-        ui.say(item(
-            "kept",
-            "not the library's",
-            show(path, root),
-            Style::Accent,
-        ));
+        if made_here(path) {
+            ui.say(item(
+                "kept",
+                "yours, what you wrote in it, saved",
+                show(path, root),
+                Style::Accent,
+            ));
+        } else {
+            ui.say(item(
+                "kept",
+                "not the library's",
+                show(path, root),
+                Style::Accent,
+            ));
+        }
     }
 
     for path in &removal.yours {
@@ -2140,10 +2628,12 @@ fn say_removal(removal: &Removal, root: &Path, ui: &mut dyn Ui) {
     )));
 
     if !removal.folder_removed && library.destination.as_deref().is_some_and(Path::is_dir) {
-        ui.say(report::note(if others.is_empty() {
-            format!("{folder} stays, for what was saved above. Delete it once you have taken what you need.")
-        } else {
+        let foreign = others.iter().any(|path| !made_here(path));
+
+        ui.say(report::note(if foreign {
             format!("{folder} stays, for the files above that were not the library's.")
+        } else {
+            format!("{folder} stays, for what was saved above. Delete it once you have taken what you need.")
         }));
     }
 
@@ -2162,6 +2652,9 @@ pub fn run(request: &Request, ui: &mut dyn Ui) -> i32 {
 
 /// A whole run, with what reaches GitHub given.
 pub fn run_with(mut client: Client, request: &Request, ui: &mut dyn Ui) -> i32 {
+    // One copy a file for the whole run, of the file as it was before it.
+    let _copies = crate::files::run_copies();
+
     if request.libraries.is_empty() && request.uninstall.is_empty() {
         let given = request
             .platform
@@ -2195,9 +2688,49 @@ pub fn run_with(mut client: Client, request: &Request, ui: &mut dyn Ui) -> i32 {
         return 2;
     }
 
+    // Nothing was ever installed here: said so, rather than asked which platform it is. A sketch's libraries are
+    // recorded in the sketchbook, so a sketch is left to its target.
+    let sketch = request.platform == Some(Platform::Arduino)
+        || detect::detect(&folder)
+            .candidates
+            .iter()
+            .any(|candidate| candidate.platform == Platform::Arduino);
+
+    if !request.uninstall.is_empty()
+        && request.libraries.is_empty()
+        && !sketch
+        && !folder.join(record::RECORD_NAME).is_file()
+        && Platform::ALL
+            .iter()
+            .all(|platform| installer::legacy_of(&folder, *platform).is_none())
+    {
+        ui.error(&format!(
+            "{} {} not installed in this project: it has no {}, the record of what libNIMA installed.",
+            request.uninstall.join(", "),
+            if request.uninstall.len() > 1 { "are" } else { "is" },
+            record::RECORD_NAME
+        ));
+        return 2;
+    }
+
     let Some(platform) = choose_platform(request, &folder, &mut client, ui) else {
         return 2;
     };
+
+    // Which platform, and what told it, once at the top of every run on a project.
+    let told = match request.platform {
+        Some(_) => "given with --platform".to_string(),
+        None => detect::detect(&folder)
+            .candidates
+            .iter()
+            .find(|candidate| candidate.platform == platform)
+            .map_or_else(
+                || "as the libraries' libnima.yml say".to_string(),
+                |candidate| candidate.evidence.clone(),
+            ),
+    };
+
+    ui.say(report::note(format!("{}: {told}.", project_word(platform))));
 
     if !check_platform_args(&request.args, platform, ui) {
         return 2;
@@ -2211,6 +2744,24 @@ pub fn run_with(mut client: Client, request: &Request, ui: &mut dyn Ui) -> i32 {
     let mut args = request.args.clone();
     args.uninstalling = request.uninstall.clone();
 
+    // A check of a project an installer before libNIMA left reads it as the install will, once it is moved over: on a copy
+    // moved over, since a check writes nothing.
+    let mut copy = None;
+    let folder = match installer::legacy_of(&folder, platform) {
+        Some((_, from)) if request.check_only => match moved_over_copy(&folder, platform, &args) {
+            Some(copied) => {
+                ui.say(report::note(format!(
+                    "Installed by {from}: the install moves the project over to libnima first, and it is checked here as it \
+                     will be then, on a copy. Nothing in it is changed."
+                )));
+                copy = Some(copied.clone());
+                copied
+            }
+            None => folder,
+        },
+        _ => folder,
+    };
+
     let moving = !request.check_only;
     let mut session = match Session::open(client, platform, &args, &folder, moving, ui) {
         Ok(session) => session,
@@ -2222,8 +2773,60 @@ pub fn run_with(mut client: Client, request: &Request, ui: &mut dyn Ui) -> i32 {
     }
 
     if request.check_only {
-        return check::run(&mut session, request);
+        let code = check::run(&mut session, request);
+
+        drop(session);
+
+        if let Some(copy) = copy {
+            download::cleanup(&copy);
+        }
+
+        return code;
     }
 
     session.install(request)
+}
+
+/// What a project of the platform is called.
+fn project_word(platform: Platform) -> &'static str {
+    match platform {
+        Platform::Stm32 => "STM32 project",
+        Platform::Zephyr => "Zephyr application",
+        Platform::Esp32 => "ESP-IDF project",
+        Platform::Arduino => "Arduino sketch",
+        Platform::Pio => "PlatformIO project",
+    }
+}
+
+/// A copy of a project an installer before libNIMA left, moved over as the install would move it, for a check to read.
+/// What a build makes, and the folders hidden from a listing, such as .git, are left out, being no part of it.
+fn moved_over_copy(folder: &Path, platform: Platform, args: &PlatformArgs) -> Option<PathBuf> {
+    let copy = download::new_staging().ok()?;
+
+    for relative in paths::files_below(folder) {
+        let parts: Vec<&str> = relative.split('/').collect();
+        let skipped =
+            parts.len() > 1 && (parts[0].starts_with('.') || parts[0].starts_with("build"));
+
+        if skipped {
+            continue;
+        }
+
+        let target = copy.join(&relative);
+
+        if target
+            .parent()
+            .is_some_and(|parent| std::fs::create_dir_all(parent).is_err())
+            || std::fs::copy(folder.join(&relative), &target).is_err()
+        {
+            download::cleanup(&copy);
+            return None;
+        }
+    }
+
+    let target = target_of(platform, args);
+
+    installer::migrate(&copy, target.as_ref());
+
+    Some(copy)
 }

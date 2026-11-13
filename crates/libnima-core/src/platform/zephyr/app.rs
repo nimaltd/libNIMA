@@ -17,6 +17,8 @@
 //!                 Never the application's Kconfig file
 //! ```
 //!
+//! The application's devicetree overlay, where a library's #include lines go, is in overlay.rs.
+//!
 //! These files are the user's, so the rules of every edit here hold: a copy is taken before
 //! anything changes, a file this cannot read safely is left alone with the lines to add by
 //! hand, a second install adds nothing twice, and the file's own line endings are kept.
@@ -33,7 +35,7 @@ use regex::Regex;
 
 use super::module::{fragment_name, groups};
 use super::{AFTER_ZEPHYR, BEFORE_ZEPHYR, CONF_KEY};
-use crate::blocks::{self, Group, INSTALLER, Marker};
+use crate::blocks::{self, Group, INSTALLER, Marker, Place};
 use crate::files::{self, backup, text_or_empty};
 use crate::manifest::{LIBRARY, MANIFEST_NAME, Manifest};
 use crate::paths;
@@ -99,11 +101,12 @@ fn conf_names_in(folder: &Path) -> Vec<String> {
 /// The application's Kconfig files, as paths from its folder: prj.conf first, then any other
 /// .conf beside it, then the boards' own in boards/.
 pub fn conf_files(project_root: &Path) -> Vec<String> {
-    // sysbuild.conf is sysbuild's, not the application's: a library is never switched on
-    // there, so it is never offered.
+    // sysbuild.conf is sysbuild's, not the application's, and so is a sysbuild_<suffix>.conf
+    // of a build with a file suffix: a library is never switched on there, so they are never
+    // offered.
     let mut found: Vec<String> = conf_names_in(project_root)
         .into_iter()
-        .filter(|name| name != SYSBUILD_CONF)
+        .filter(|name| name != SYSBUILD_CONF && !name.starts_with("sysbuild_"))
         .collect();
 
     found.extend(
@@ -231,7 +234,13 @@ fn module_path(destination: &Path, project_root: &Path) -> String {
 }
 
 /// Back the file up and write it.
-fn write_block(path: &Path, label: &str, text: &str, updated: &str, what: &str) -> Outcome {
+pub(super) fn write_block(
+    path: &Path,
+    label: &str,
+    text: &str,
+    updated: &str,
+    what: &str,
+) -> Outcome {
     if updated == text {
         return Outcome::new(
             label,
@@ -275,7 +284,7 @@ fn write_block(path: &Path, label: &str, text: &str, updated: &str, what: &str) 
     Outcome::new(label, Status::Changed, format!("Added {what} to {label}.")).with_backup(saved)
 }
 
-fn half_written(label: &str, name: &str, block: &str) -> Outcome {
+pub(super) fn half_written(label: &str, name: &str, block: &str) -> Outcome {
     Outcome::new(
         label,
         Status::Manual,
@@ -391,8 +400,8 @@ fn integrate_cmake(project_root: &Path, library: &Manifest, destination: &Path) 
         )
     });
 
-    // The fragment's block before the groups, so each group placed above find_package(Zephyr)
-    // lands below it, as it did the last time.
+    // The fragment's block before the groups, so a group new above find_package(Zephyr) lands
+    // below it. The blocks already above it stay where they are.
     let fragment = fragment_lines(library, destination, project_root);
 
     let Ok(updated) = with_fragment(&updated, library, &fragment, newline) else {
@@ -471,7 +480,7 @@ fn with_fragment(
             &found,
             &lines[1..lines.len() - 1],
             newline,
-            Some(&above_zephyr),
+            Place::Above(&zephyr_line),
         );
     }
 
@@ -533,25 +542,27 @@ fn with_groups(
         let content = &lines[1..lines.len() - 1];
         let found = marker(&library.name, Some(&group.label));
 
-        text = if group.place == BEFORE_ZEPHYR {
-            blocks::place(&text, &found, content, newline, Some(&above_zephyr))?
+        let side = if group.place == BEFORE_ZEPHYR {
+            Place::Above(&zephyr_line)
         } else {
-            blocks::place(&text, &found, content, newline, None)?
+            Place::Below(&zephyr_line)
         };
+
+        text = blocks::place(&text, &found, content, newline, side)?;
     }
 
     Ok(text)
 }
 
-/// Where find_package(Zephyr)'s line starts, for a group to go above it.
-fn above_zephyr(text: &str) -> Option<usize> {
+/// Where find_package(Zephyr)'s line starts, for a block to go above it or below it.
+fn zephyr_line(text: &str) -> Option<usize> {
     FIND_ZEPHYR
         .find(text)
         .map(|found| blocks::line_start(text, found.start()))
 }
 
 /// A line for each block the user changed inside since it was written.
-fn edited(
+pub(super) fn edited(
     project_root: &Path,
     name: &str,
     label: &str,
@@ -728,14 +739,8 @@ fn integrate_conf(project_root: &Path, library: &Manifest, conf: &str) -> Outcom
     outcome
 }
 
-fn append_block(text: &str, block: &str, newline: &str) -> String {
-    let head = text.trim_end_matches(['\r', '\n']);
-
-    if head.is_empty() {
-        format!("{block}{newline}")
-    } else {
-        format!("{head}{newline}{newline}{block}{newline}")
-    }
+pub(super) fn append_block(text: &str, block: &str, newline: &str) -> String {
+    blocks::appended(text, block, newline)
 }
 
 /// Every symbol sysbuild.conf sets outside this library's block: (symbol, value).
@@ -832,7 +837,7 @@ fn integrate_sysbuild(project_root: &Path, library: &Manifest) -> Option<Outcome
     if part.sysbuild.is_empty() {
         return match span {
             Ok(None) => None,
-            _ => Some(cut_block(&path, SYSBUILD_CONF, name)),
+            _ => Some(cut_block(project_root, &path, SYSBUILD_CONF, name)),
         };
     }
 
@@ -890,8 +895,10 @@ pub fn integrate(
 }
 
 /// Take this library's blocks out of one file, with the blank line each brought: its own, and in
-/// CMakeLists.txt the one of its Kconfig fragment and every group of its CMake lines.
-fn cut_block(path: &Path, label: &str, name: &str) -> Outcome {
+/// CMakeLists.txt the one of its Kconfig fragment and every group of its CMake lines. A block the
+/// user changed inside since it was written goes too, and that is said, with the copy that keeps
+/// it, as an install says it.
+fn cut_block(project_root: &Path, path: &Path, label: &str, name: &str) -> Outcome {
     let Ok(text) = files::read(path) else {
         return Outcome::new(
             label,
@@ -934,6 +941,13 @@ fn cut_block(path: &Path, label: &str, name: &str) -> Outcome {
         );
     }
 
+    let installed = installed_libraries(project_root);
+    let recorded = installed.get(name).and_then(|entry| entry.get("blocks"));
+    let changed: Vec<&Marker> = markers
+        .iter()
+        .filter(|found| blocks::edited(recorded, label, found, &text))
+        .collect();
+
     let saved = backup(path).ok();
 
     if let Err(error) = files::write(path, &updated) {
@@ -945,12 +959,26 @@ fn cut_block(path: &Path, label: &str, name: &str) -> Outcome {
         .with_backup(saved);
     }
 
-    Outcome::new(
+    let kept = saved
+        .as_ref()
+        .and_then(|copy| copy.file_name())
+        .map(|copy| format!(" {} keeps the file as it was.", copy.to_string_lossy()))
+        .unwrap_or_default();
+    let mut outcome = Outcome::new(
         label,
         Status::Changed,
         format!("Removed {name} from {label}."),
     )
-    .with_backup(saved)
+    .with_backup(saved);
+
+    outcome.steps.extend(changed.iter().map(|found| {
+        format!(
+            "Your change inside the {} block went with it, as the block was {name}'s.{kept}",
+            found.name
+        )
+    }));
+
+    outcome
 }
 
 /// Take this library's blocks out of CMakeLists.txt, its Kconfig file and sysbuild.conf.
@@ -960,20 +988,60 @@ pub fn uninstall(project_root: &Path, name: &str) -> Vec<Outcome> {
     let cmakelists = project_root.join(CMAKELISTS);
 
     if cmakelists.is_file() {
-        outcomes.push(cut_block(&cmakelists, CMAKELISTS, name));
+        outcomes.push(cut_block(project_root, &cmakelists, CMAKELISTS, name));
     }
 
     if let Some(conf) = holding(project_root, name) {
-        outcomes.push(cut_block(&project_root.join(&conf), &conf, name));
+        outcomes.push(cut_block(
+            project_root,
+            &project_root.join(&conf),
+            &conf,
+            name,
+        ));
     }
 
     let sysbuild = project_root.join(SYSBUILD_CONF);
 
     if sysbuild.is_file() && !matches!(block_span(&text_or_empty(&sysbuild), name), Ok(None)) {
-        outcomes.push(cut_block(&sysbuild, SYSBUILD_CONF, name));
+        outcomes.push(cut_block(project_root, &sysbuild, SYSBUILD_CONF, name));
     }
 
     outcomes
+}
+
+/// The blocks of this library's that the user changed inside since they were written, as (file, block), in every file
+/// of the application that holds one: what a check says, as the install will write them again.
+pub(super) fn changed_blocks(project_root: &Path, name: &str, conf: &str) -> Vec<(String, String)> {
+    let installed = installed_libraries(project_root);
+    let recorded = installed.get(name).and_then(|entry| entry.get("blocks"));
+    let mut found = Vec::new();
+
+    for label in [CMAKELISTS, conf, SYSBUILD_CONF] {
+        let text = text_or_empty(&project_root.join(label));
+
+        if text.is_empty() || found.iter().any(|(file, _)| file == label) {
+            continue;
+        }
+
+        let mut markers = vec![marker(name, None)];
+
+        if label == CMAKELISTS {
+            markers.push(marker(name, Some(FRAGMENT_LABEL)));
+            markers.extend(
+                blocks::labels(&text, name)
+                    .iter()
+                    .map(|group| marker(name, Some(group))),
+            );
+        }
+
+        for found_marker in markers {
+            if blocks::edited(recorded, label, &found_marker, &text) {
+                found.push((label.to_string(), found_marker.name.clone()));
+            }
+        }
+    }
+
+    found
 }
 
 /// Lines of the application's Kconfig files that still set one of symbols: (file, lines). Read

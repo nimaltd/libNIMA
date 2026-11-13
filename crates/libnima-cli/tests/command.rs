@@ -134,6 +134,7 @@ fn the_help_lists_each_platforms_options_under_its_name() {
     for (heading, option) in [
         ("STM32 only", "--ide"),
         ("Zephyr only", "--conf"),
+        ("Zephyr only", "--overlay"),
         ("Arduino only", "--into"),
     ] {
         let at = shown
@@ -513,7 +514,13 @@ fn convert_writes_the_new_file_and_keeps_the_old() {
     let root = tempfile::tempdir().unwrap();
     let folder = root.path().join("old");
 
-    put(&folder, &[("installer.yml", OLD), ("inc/demo.h", "")]);
+    put(
+        &folder,
+        &[
+            ("installer.yml", OLD),
+            ("inc/demo.h", "/**\n * @version 1.0.0\n */\n"),
+        ],
+    );
 
     let done = libnima(&folder, &["--convert"]);
     let written = fs::read_to_string(folder.join("libnima.yml")).unwrap();

@@ -159,6 +159,12 @@ pub trait Target {
         "This kind of project has no folder of its own to put them in."
     }
 
+    /// Why a library's once files cannot go in with what this run was told, such as a file named with a flag of the
+    /// target's that is one of them, or None. Checked with the rest before anything is written, by --check as well.
+    fn once_clash(&self, _library: &Manifest) -> Option<String> {
+        None
+    }
+
     /// Files in the project a once file must never be, because libNIMA edits them or
     /// reads them as the project's own: paths from once_root(), or patterns such as
     /// *.ioc. The record is always one of them.

@@ -178,6 +178,13 @@ impl Setting {
             example,
         )?;
         let where_ = format!("{section}.settings {name}");
+
+        crate::manifest::only_keys(
+            map,
+            &where_,
+            &["name", "type", "default", "range", "prompt", "help"],
+        )?;
+
         let kind = map
             .given("type")
             .map(Node::text)

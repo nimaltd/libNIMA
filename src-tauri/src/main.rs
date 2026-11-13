@@ -52,6 +52,7 @@ pub struct Asked {
     platform: Option<Platform>,
     ide: Option<String>,
     conf: Option<String>,
+    overlay: Option<String>,
     into: Option<String>,
     sketchbook: Option<String>,
     /// A token for this run only: never saved, and sent to GitHub and nowhere else.
@@ -63,6 +64,7 @@ impl Asked {
         PlatformArgs {
             ide: self.ide.clone(),
             conf: self.conf.clone(),
+            overlay: self.overlay.clone(),
             into: self.into.clone(),
             sketchbook: self.sketchbook.clone(),
             uninstalling: Vec::new(),

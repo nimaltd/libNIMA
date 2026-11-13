@@ -13,9 +13,11 @@ use std::fmt;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 use std::thread;
 use std::time::Duration;
 
+use regex::Regex;
 use serde_json::{Map, Value, json};
 use ureq::Agent;
 use ureq::config::RedirectAuthHeaders;
@@ -211,12 +213,25 @@ fn private_hint(token: Option<&(String, String)>) -> String {
     }
 }
 
-/// What to do when GitHub cannot be reached, said once wherever that happens.
+/// What to do when GitHub cannot be reached, said once wherever that happens. Which zips to give is the run's to say,
+/// with the names of its own libraries, so none are named here.
 fn offline_hint() -> String {
     "Run it again, as a bad connection often passes. Behind a proxy or a VPN, set HTTPS_PROXY to it, or use the system \
      proxy on Windows. Or download each library with Code, Download ZIP, from wherever GitHub opens, and give the zips \
-     on the command line: libnima spif-main.zip osal-main.zip"
+     on the command line."
         .to_string()
+}
+
+/// Why a file given as a zip cannot be read as one, an incomplete download above all, or None when it can.
+pub fn zip_problem(archive: &Path) -> Option<String> {
+    let file = match fs::File::open(archive) {
+        Ok(file) => file,
+        Err(error) => return Some(error.to_string()),
+    };
+
+    zip::ZipArchive::new(file)
+        .err()
+        .map(|error| error.to_string())
 }
 
 /// Whether trying again could get a different answer.
@@ -231,11 +246,60 @@ fn passing(failure: &Failure, token: bool) -> bool {
     }
 }
 
+/// An SSH clone address: user@host:path, as git writes it, or ssh://user@host[:port]/path.
+static SSH: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"^(?:[A-Za-z0-9._-]+@(?P<host>[A-Za-z0-9.-]+):(?P<path>[^/].*)|ssh://(?:[A-Za-z0-9._-]+@)?(?P<host2>[A-Za-z0-9.-]+)(?::\d+)?/(?P<path2>.+))$",
+    )
+    .expect("a valid pattern")
+});
+
+/// Whether a source is an address, on the web or for SSH, rather than a name or a path.
+pub fn is_address(text: &str) -> bool {
+    let text = text.trim();
+
+    text.starts_with("http://") || text.starts_with("https://") || SSH.is_match(text)
+}
+
+/// Refused at once, before anything reaches the network, when a host is not GitHub's: libNIMA fetches from GitHub only.
+fn on_github(source: &str, host: &str) -> Result<(), DownloadError> {
+    let host = host.to_lowercase();
+
+    if host == "github.com" || host == "www.github.com" {
+        return Ok(());
+    }
+
+    Err(DownloadError::new(format!(
+        "{source} is not on GitHub. libNIMA fetches from GitHub only: download the library, and give its zip or its \
+         folder."
+    )))
+}
+
 /// Owner, repository name and ref from a source: "owner/name@v1.2.0", "name", or a GitHub URL, a /tree/<ref> one
-/// included. The ref is None when none is named, which means the repository's default branch.
+/// included, or an SSH clone address of GitHub. The ref is None when none is named, which means the repository's default
+/// branch. An address on another host is refused.
 pub fn split_ref(source: &str) -> Result<(String, String, Option<String>), DownloadError> {
     let mut text = source.trim().to_string();
     let mut reference = None;
+
+    // An SSH clone address names a repository on a host: git@github.com:owner/name.git, or ssh://git@github.com/owner/
+    // name.git. Read as a name with a ref after its @, it was the library nimaltd/git.
+    if let Some(found) = SSH.captures(&text) {
+        let part = |one: &str, other: &str| {
+            found
+                .name(one)
+                .or_else(|| found.name(other))
+                .map_or("", |part| part.as_str())
+                .to_string()
+        };
+        let (host, path) = (part("host", "host2"), part("path", "path2"));
+
+        on_github(source, &host)?;
+
+        let (owner, repo) = split(&path)?;
+
+        return Ok((owner, repo, None));
+    }
 
     if text.starts_with("http://") || text.starts_with("https://") {
         let trimmed = text.trim_end_matches('/').to_string();
@@ -273,6 +337,11 @@ fn split(source: &str) -> Result<(String, String), DownloadError> {
             .split('/')
             .filter(|part| !part.is_empty() && *part != "https:" && *part != "http:")
             .collect();
+
+        // The host first: an address on another one is not the GitHub repository of the same owner and name.
+        if let Some(host) = parts.first() {
+            on_github(source, host)?;
+        }
 
         if parts.len() < 3 {
             return Err(DownloadError::new(format!(
@@ -1063,7 +1132,7 @@ fn write_under(root: &Path, relative: &str, data: &[u8]) -> Result<(), DownloadE
 }
 
 /// A new temporary folder the caller removes with cleanup().
-fn new_staging() -> std::io::Result<PathBuf> {
+pub(crate) fn new_staging() -> std::io::Result<PathBuf> {
     Ok(tempfile::Builder::new()
         .prefix("libnima-")
         .tempdir()?
@@ -1239,6 +1308,49 @@ mod tests {
             split_of("someone/lib@feature/x").2.as_deref(),
             Some("feature/x")
         );
+        assert_eq!(split_of("https://WWW.GitHub.com/someone/lib"), owned);
+        assert_eq!(split_of("lib@feature/x").2.as_deref(), Some("feature/x"));
+    }
+
+    #[test]
+    fn an_ssh_address_of_github_is_the_repository_it_names() {
+        let owned = ("someone".to_string(), "lib".to_string(), None);
+
+        assert_eq!(split_of("git@github.com:someone/lib.git"), owned);
+        assert_eq!(split_of("git@github.com:someone/lib"), owned);
+        assert_eq!(split_of("ssh://git@github.com/someone/lib.git"), owned);
+        assert!(is_address("git@github.com:someone/lib.git"));
+        assert!(is_address("ssh://git@github.com/someone/lib.git"));
+        assert!(!is_address("someone/lib@v1.2.0"));
+        assert!(!is_address("lib@feature/x"));
+    }
+
+    #[test]
+    fn an_address_on_another_host_is_refused_before_anything_is_asked() {
+        for text in [
+            "https://gitlab.com/someone/lib",
+            "https://example.com/someone/lib",
+            "git@gitlab.com:someone/lib.git",
+            "ssh://git@gitlab.com/someone/lib.git",
+        ] {
+            let error = split_ref(text).unwrap_err();
+
+            assert!(
+                error.message.contains("is not on GitHub"),
+                "{text}: {}",
+                error.message
+            );
+        }
+    }
+
+    #[test]
+    fn a_file_that_cannot_be_opened_as_a_zip_says_why() {
+        let root = tempfile::tempdir().unwrap();
+        let broken = root.path().join("broken.zip");
+        fs::write(&broken, b"PK\x03\x04 cut short").unwrap();
+
+        assert!(zip_problem(&broken).is_some());
+        assert!(zip_problem(&root.path().join("missing.zip")).is_some());
     }
 
     #[test]

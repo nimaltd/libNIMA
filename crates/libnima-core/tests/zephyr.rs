@@ -858,6 +858,420 @@ fn sysbuild_conf_is_never_offered_as_the_kconfig_file() {
     assert_eq!(app::conf_files(&project), ["prj.conf", "debug.conf"]);
 }
 
+/// An application gcore went into, put back as lib-installer left it, with a line of the user's below gcore's block that
+/// gcore needs otherwise.
+fn left_by_lib_installer(root: &Path) -> (PathBuf, PathBuf) {
+    let project = application(
+        root,
+        Some("CONFIG_GPIO=y\n"),
+        &[("prj_debug.conf", "CONFIG_LOG=y\n")],
+        false,
+    );
+    let library = gcore(root, "  project:\n    conf:\n      - LOG=n\n");
+
+    install(&project, &library);
+
+    for file in ["CMakeLists.txt", "prj.conf"] {
+        let path = project.join(file);
+        let text = read(&path).replace("libnima: gcore", "lib-installer: gcore");
+
+        write(&path, &text);
+    }
+
+    let prj = format!("{}CONFIG_LOG=y\n", read(project.join("prj.conf")));
+    write(project.join("prj.conf"), &prj);
+    fs::rename(
+        project.join(".libnima.json"),
+        project.join(".lib-installer.json"),
+    )
+    .unwrap();
+
+    for bak in all_backups(&project) {
+        fs::remove_file(project.join(bak)).unwrap();
+    }
+
+    (project, library)
+}
+
+#[test]
+fn a_check_reads_a_project_of_lib_installer_as_the_install_will_and_writes_nothing() {
+    let root = tempfile::tempdir().unwrap();
+    let (project, library) = left_by_lib_installer(root.path());
+    let before: Vec<(String, String)> = libnima_core::paths::files_below(&project)
+        .into_iter()
+        .map(|path| (path.clone(), read(project.join(&path))))
+        .collect();
+    let mut request = asked(&project, &library, None);
+    request.check_only = true;
+
+    let (_, ui) = run(&request);
+    let out = ui.out();
+
+    let after: Vec<(String, String)> = libnima_core::paths::files_below(&project)
+        .into_iter()
+        .map(|path| (path.clone(), read(project.join(&path))))
+        .collect();
+
+    assert_eq!(after, before, "a check wrote something");
+    assert!(out.contains("Installed by lib-installer"), "{out}");
+    // The user's line below the block, which the install reports too.
+    assert!(out.contains("CONFIG_LOG=y"), "{out}");
+    // Not lines of gcore's own block taken for the user's, and no question an update never asks.
+    assert!(!out.contains("already sets CONFIG_LOG=n"), "{out}");
+    assert!(!out.contains("more than one Kconfig file"), "{out}");
+}
+
+#[test]
+fn moving_a_project_over_leaves_one_copy_a_file_of_it_as_it_was() {
+    let root = tempfile::tempdir().unwrap();
+    let (project, library) = left_by_lib_installer(root.path());
+    let originals: Vec<String> = ["CMakeLists.txt", "prj.conf"]
+        .iter()
+        .map(|file| read(project.join(file)))
+        .collect();
+
+    let ui = install(&project, &library);
+
+    for (file, original) in ["CMakeLists.txt", "prj.conf"].iter().zip(&originals) {
+        let copies = backups(&project, file);
+
+        assert_eq!(copies.len(), 1, "{file}: {copies:?}");
+        assert_eq!(&read(&copies[0]), original, "{file}");
+        assert!(
+            ui.out()
+                .contains(&copies[0].file_name().unwrap().to_string_lossy().to_string()),
+            "{file}: {}",
+            ui.out()
+        );
+    }
+
+    // Again, with nothing to change: no copy at all.
+    let saved = all_backups(&project);
+
+    install(&project, &library);
+
+    assert_eq!(all_backups(&project), saved);
+}
+
+#[test]
+fn an_install_that_changes_nothing_writes_nothing_and_says_so() {
+    let root = tempfile::tempdir().unwrap();
+    let project = plain_app(root.path());
+    let library = gcore_with(
+        root.path(),
+        "",
+        "extras:\n  - README.md\n",
+        &[("README.md", "gcore\n")],
+    );
+
+    install(&project, &library);
+
+    let record_before = read(project.join(".libnima.json"));
+    let readme = project.join("modules/gcore/README.md");
+    let written_at = fs::metadata(&readme).unwrap().modified().unwrap();
+    let ui = install(&project, &library);
+
+    assert_eq!(read(project.join(".libnima.json")), record_before);
+    assert_eq!(
+        fs::metadata(&readme).unwrap().modified().unwrap(),
+        written_at
+    );
+    assert!(!ui.out().contains("written "), "{}", ui.out());
+    assert!(ui.out().contains("same"), "{}", ui.out());
+}
+
+#[test]
+fn install_and_uninstall_give_back_a_file_with_no_final_line_ending() {
+    let root = tempfile::tempdir().unwrap();
+    let cmake = ZEPHYR_CMAKELISTS.trim_end().to_string();
+    let project = application_named(
+        root.path(),
+        "app",
+        &cmake,
+        Some("CONFIG_GPIO=y"),
+        &[],
+        false,
+    );
+    let library = gcore(root.path(), "  project:\n    conf:\n      - LOG=n\n");
+
+    install(&project, &library);
+    uninstall(&project, "gcore");
+
+    assert_eq!(read(project.join("prj.conf")), "CONFIG_GPIO=y");
+    assert_eq!(read(project.join("CMakeLists.txt")), cmake);
+}
+
+#[test]
+fn an_uninstall_says_when_a_change_inside_the_block_goes_with_it() {
+    let root = tempfile::tempdir().unwrap();
+    let library = gcore(root.path(), "  project:\n    conf:\n      - LOG=n\n");
+
+    let edited = plain_app(&root.path().join("edited"));
+    install(&edited, &library);
+    let prj =
+        read(edited.join("prj.conf")).replace("CONFIG_LOG=n\n", "CONFIG_LOG=n\nCONFIG_MINE=y\n");
+    write(edited.join("prj.conf"), &prj);
+
+    let ui = uninstall(&edited, "gcore");
+
+    assert!(
+        ui.out()
+            .contains("Your change inside the gcore block went with it"),
+        "{}",
+        ui.out()
+    );
+    assert!(
+        all_backups(&edited)
+            .iter()
+            .any(|bak| read(edited.join(bak)).contains("CONFIG_MINE=y"))
+    );
+
+    let clean = plain_app(&root.path().join("clean"));
+    install(&clean, &library);
+
+    assert!(!uninstall(&clean, "gcore").out().contains("inside"));
+}
+
+#[test]
+fn an_uninstall_leaves_no_empty_modules_folder_and_names_the_modules_copy_in_full() {
+    let root = tempfile::tempdir().unwrap();
+    let project = plain_app(root.path());
+    let library = gcore(root.path(), "");
+
+    install(&project, &library);
+
+    // Something of the user's in the module's USER CODE, which the uninstall saves.
+    let module = in_module(&project, "gcore", "CMakeLists.txt");
+    let text = read(&module).replace(
+        "# USER CODE BEGIN GCORE_CMAKE\n",
+        "# USER CODE BEGIN GCORE_CMAKE\n  zephyr_library_compile_definitions(MINE=1)\n",
+    );
+    write(&module, &text);
+
+    let ui = uninstall(&project, "gcore");
+    let out = ui.out();
+
+    assert!(
+        out.contains("backup: modules/gcore/zephyr/CMakeLists.txt."),
+        "{out}"
+    );
+    assert!(!out.contains("not the library's"), "{out}");
+
+    let clean = plain_app(&root.path().join("clean"));
+    install(&clean, &library);
+    uninstall(&clean, "gcore");
+
+    assert!(!clean.join("modules").exists());
+}
+
+#[test]
+fn an_update_says_when_the_template_of_a_once_file_changed() {
+    let root = tempfile::tempdir().unwrap();
+    let project = plain_app(root.path());
+    let first = lib_at(
+        &root.path().join("v1"),
+        "mini",
+        "once:\n  - from: templates/hooks.c\n    to: src/hooks.c\n",
+        &[("templates/hooks.c", "/* hooks */\n")],
+    );
+    let same = lib_at(
+        &root.path().join("v2"),
+        "mini",
+        "once:\n  - from: templates/hooks.c\n    to: src/hooks.c\n",
+        &[("templates/hooks.c", "/* hooks */\n")],
+    );
+    let changed = lib_at(
+        &root.path().join("v3"),
+        "mini",
+        "once:\n  - from: templates/hooks.c\n    to: src/hooks.c\n",
+        &[("templates/hooks.c", "/* hooks, and one more */\n")],
+    );
+
+    install(&project, &first);
+
+    assert!(
+        !install(&project, &same)
+            .out()
+            .contains("changed since it was made")
+    );
+
+    let ui = install(&project, &changed);
+
+    assert!(
+        ui.out()
+            .contains("mini's templates/hooks.c changed since it was made"),
+        "{}",
+        ui.out()
+    );
+    assert_eq!(read(project.join("src/hooks.c")), "/* hooks */\n");
+    // Said once: the next update with the same template says nothing.
+    assert!(
+        !install(&project, &changed)
+            .out()
+            .contains("changed since it was made")
+    );
+}
+
+#[test]
+fn a_check_says_a_change_inside_the_block_would_be_replaced() {
+    let root = tempfile::tempdir().unwrap();
+    let project = plain_app(root.path());
+    let library = gcore(root.path(), "  project:\n    conf:\n      - LOG=n\n");
+
+    install(&project, &library);
+
+    let prj = read(project.join("prj.conf")).replace("CONFIG_LOG=n", "CONFIG_LOG=y");
+    write(project.join("prj.conf"), &prj);
+
+    let mut request = asked(&project, &library, None);
+    request.check_only = true;
+
+    let (code, ui) = run(&request);
+
+    assert_eq!(code, 1, "{}", ui.out());
+    assert!(
+        ui.out()
+            .contains("prj.conf: your change inside the gcore block would be replaced"),
+        "{}",
+        ui.out()
+    );
+    assert!(ui.out().contains("CHECK"), "{}", ui.out());
+    assert_eq!(read(project.join("prj.conf")), prj);
+}
+
+#[test]
+fn a_run_names_the_platform_and_what_told_it() {
+    let root = tempfile::tempdir().unwrap();
+    let project = plain_app(root.path());
+    let ui = install(&project, &demo(root.path(), ""));
+
+    assert!(
+        ui.out()
+            .contains("Zephyr application: find_package(Zephyr) in CMakeLists.txt."),
+        "{}",
+        ui.out()
+    );
+}
+
+#[test]
+fn no_file_of_sysbuild_is_offered_as_the_kconfig_file() {
+    let root = tempfile::tempdir().unwrap();
+    let project = application(
+        root.path(),
+        Some("CONFIG_GPIO=y\n"),
+        &[
+            ("sysbuild_debug.conf", "SB_CONFIG_X=y\n"),
+            ("prj_debug.conf", ""),
+        ],
+        false,
+    );
+
+    assert_eq!(app::conf_files(&project), ["prj.conf", "prj_debug.conf"]);
+}
+
+#[test]
+fn conf_takes_only_a_kconfig_file_of_the_application() {
+    let root = tempfile::tempdir().unwrap();
+    let outside = root.path().join("outside.conf");
+    write(&outside, "");
+
+    for (conf, wanted) in [
+        ("sysbuild_debug.conf", "holds settings of sysbuild"),
+        ("sysbuild/mcuboot.conf", "holds settings of sysbuild"),
+        ("CMakeLists.txt", "is no Kconfig file"),
+        ("src/main.c", "is no Kconfig file"),
+        (".libnima.json", "is no Kconfig file"),
+        ("../outside.conf", "outside the application"),
+        (outside.to_str().unwrap(), "outside the application"),
+    ] {
+        for check_only in [true, false] {
+            let project = application_named(
+                root.path(),
+                &format!("app-{}-{check_only}", wanted.len()),
+                ZEPHYR_CMAKELISTS,
+                Some("CONFIG_GPIO=y\n"),
+                &[("sysbuild_debug.conf", ""), ("sysbuild/mcuboot.conf", "")],
+                false,
+            );
+            let before = libnima_core::paths::files_below(&project);
+            let mut request = asked(&project, &demo(root.path(), ""), None);
+
+            request.args.conf = Some(conf.to_string());
+            request.check_only = check_only;
+
+            let (code, ui) = run(&request);
+
+            assert_eq!(code, 2, "{conf}: {}", ui.out());
+            assert!(ui.err().contains(wanted), "{conf}: {}", ui.err());
+            assert!(
+                ui.err().contains("Leave out --conf"),
+                "{conf}: {}",
+                ui.err()
+            );
+            assert_eq!(libnima_core::paths::files_below(&project), before, "{conf}");
+        }
+    }
+
+    // A board's own file is the application's, and is made when missing.
+    let project = plain_app(&root.path().join("board"));
+    let mut request = asked(&project, &demo(root.path(), ""), None);
+    request.args.conf = Some("boards/nrf52840dk_nrf52840.conf".to_string());
+
+    assert_eq!(run(&request).0, 0);
+    assert!(read(project.join("boards/nrf52840dk_nrf52840.conf")).contains("CONFIG_DEMO=y"));
+}
+
+#[test]
+fn conf_naming_a_once_file_of_the_library_is_refused_by_the_check_too() {
+    let root = tempfile::tempdir().unwrap();
+    let library = lib_at(
+        root.path(),
+        "mini",
+        "once:\n  - prj_debug.conf\n",
+        &[("prj_debug.conf", "CONFIG_LOG=y\n")],
+    );
+
+    for check_only in [true, false] {
+        let project = application_named(
+            root.path(),
+            &format!("app-{check_only}"),
+            ZEPHYR_CMAKELISTS,
+            Some("CONFIG_GPIO=y\n"),
+            &[],
+            false,
+        );
+        let before = libnima_core::paths::files_below(&project);
+        let mut request = asked(&project, &library, None);
+
+        request.args.conf = Some("prj_debug.conf".to_string());
+        request.check_only = check_only;
+
+        let (code, ui) = run(&request);
+
+        assert_ne!(code, 0, "{}", ui.out());
+        assert!(
+            ui.err()
+                .contains("prj_debug.conf, given with --conf, is one of mini's own once files"),
+            "{}",
+            ui.err()
+        );
+        assert_eq!(libnima_core::paths::files_below(&project), before);
+    }
+
+    // Nor is it offered: without --conf the block goes into prj.conf.
+    let project = application(
+        &root.path().join("q"),
+        Some("CONFIG_GPIO=y\n"),
+        &[("prj_debug.conf", "CONFIG_LOG=y\n")],
+        false,
+    );
+
+    install(&project, &library);
+
+    assert!(read(project.join("prj.conf")).contains("CONFIG_MINI=y"));
+    assert_eq!(read(project.join("prj_debug.conf")), "CONFIG_LOG=y\n");
+}
+
 #[test]
 fn a_block_in_sysbuild_is_not_taken_for_the_librarys_kconfig_file() {
     let root = tempfile::tempdir().unwrap();
@@ -1404,6 +1818,53 @@ fn settings_have_to_be_a_list_of_mappings() {
 }
 
 #[test]
+fn a_file_of_the_library_where_its_module_goes_is_refused_unless_it_ships_the_module() {
+    let root = tempfile::tempdir().unwrap();
+    let clash = lib_at(
+        root.path(),
+        "clash",
+        "extras:\n  - from: own/CMakeLists.txt\n    to: zephyr/CMakeLists.txt\n",
+        &[("own/CMakeLists.txt", "# the library's own\n")],
+    );
+    let error = read_it(&clash).unwrap_err();
+
+    assert!(
+        error.contains("puts a file of clash's own at zephyr/CMakeLists.txt, where libNIMA writes the library's Zephyr module"),
+        "{error}"
+    );
+
+    // One that ships its module whole keeps it.
+    let own = lib_at(
+        root.path(),
+        "own",
+        "extras:\n  - zephyr/module.yml\n  - zephyr/CMakeLists.txt\n  - zephyr/Kconfig\n",
+        &[
+            (
+                "zephyr/module.yml",
+                "name: own_lib\nbuild:\n  cmake: zephyr\n  kconfig: zephyr/Kconfig\n",
+            ),
+            ("zephyr/CMakeLists.txt", "# the library's own\n"),
+            ("zephyr/Kconfig", "config OWN\n\tbool \"own\"\n"),
+        ],
+    );
+
+    assert!(read_it(&own).is_ok());
+}
+
+#[test]
+fn a_misspelt_key_of_a_setting_is_refused() {
+    // Ignored, the range it meant to set would never be checked.
+    let error = refused(
+        "  settings:\n    - {name: GCORE_SIZE, type: int, default: 500, prompt: S, rnage: [1, 64]}\n",
+    );
+
+    assert!(
+        error.contains("zephyr.settings GCORE_SIZE has rnage. It holds name, type, default, range, prompt, help."),
+        "{error}"
+    );
+}
+
+#[test]
 fn a_setting_without_a_prompt_or_the_library_prefix_is_warned_about() {
     let found = loaded("  settings:\n    - {name: SIZE, type: int, default: 8}\n");
 
@@ -1530,7 +1991,7 @@ fn a_key_that_is_no_part_of_the_section_is_refused_with_what_it_holds() {
         ),
         (
             "  project:\n    kconfig:\n      - BT\n",
-            "zephyr.project has kconfig. It holds conf, sysbuild, cmake.",
+            "zephyr.project has kconfig. It holds conf, sysbuild, cmake, overlay.",
         ),
         (
             "  library:\n    sysbuild:\n      - X\n",
@@ -1546,7 +2007,7 @@ fn a_key_that_is_no_part_of_the_section_is_refused_with_what_it_holds() {
         ),
         (
             "  project:\n    - LOG=n\n",
-            "zephyr.project holds conf, sysbuild, cmake",
+            "zephyr.project holds conf, sysbuild, cmake, overlay",
         ),
     ] {
         let message = refused(body);
@@ -2611,6 +3072,94 @@ fn the_fragments_block_keeps_its_place_among_the_cmake_blocks() {
 }
 
 #[test]
+fn an_update_keeps_every_librarys_cmake_blocks_where_they_are() {
+    // Each block went right above find_package(Zephyr), or to the end, on every install, below the other libraries'
+    // ones: the order followed the last install, and with it which fragment's line won, and an install that changed
+    // nothing still wrote the file and left a .bak.
+    let root = tempfile::tempdir().unwrap();
+    let project = plain_app(root.path());
+    let first = gcore_with(
+        root.path(),
+        &format!("{OVERLAY}  library:\n    conf:\n{CONF}"),
+        "",
+        &[("dts/gcore.overlay", "/ { };\n")],
+    );
+    let second = lib_at(
+        root.path(),
+        "gled",
+        "zephyr:\n  symbol: GLED\n  project:\n    cmake:\n      before-zephyr:\n        - set(GLED_LEDS 1)\n      after-zephyr:\n        - target_compile_definitions(app PRIVATE GLED_APP=1)\n  library:\n    conf:\n      - PWM\n",
+        &[],
+    );
+
+    install(&project, &first);
+    install(&project, &second);
+
+    let cmake = read(project.join("CMakeLists.txt"));
+    let saved = all_backups(&project);
+    let ui = install(&project, &first);
+
+    assert_eq!(read(project.join("CMakeLists.txt")), cmake);
+    assert_eq!(all_backups(&project), saved);
+    assert!(
+        ui.out().contains("CMakeLists.txt already has gcore."),
+        "{}",
+        ui.out()
+    );
+
+    for (one, other) in [
+        ("gcore/zephyr.conf", "gled/zephyr.conf"),
+        ("gcore/before-zephyr", "gled/before-zephyr"),
+        ("gcore/after-zephyr", "gled/after-zephyr"),
+    ] {
+        assert!(
+            position(&cmake, &format!("libnima: {one} >>>"))
+                < position(&cmake, &format!("libnima: {other} >>>")),
+            "{cmake}"
+        );
+    }
+}
+
+#[test]
+fn a_block_moved_by_hand_on_its_side_of_find_package_stays_there() {
+    // So the user can say which fragment is read last, and so wins.
+    let root = tempfile::tempdir().unwrap();
+    let project = plain_app(root.path());
+    let first = with_fragment(root.path());
+    let second = lib_at(
+        root.path(),
+        "gled",
+        "zephyr:\n  symbol: GLED\n  library:\n    conf:\n      - PWM\n",
+        &[],
+    );
+
+    install(&project, &first);
+    install(&project, &second);
+
+    let path = project.join("CMakeLists.txt");
+    let text = read(&path);
+    let gled = text[position(&text, "# >>> libnima: gled/zephyr.conf >>>")..]
+        .split_inclusive('\n')
+        .take(5)
+        .collect::<String>();
+    let moved = text.replacen(&format!("{gled}\n"), "", 1).replacen(
+        FRAGMENT_BLOCK,
+        &format!("{gled}\n{FRAGMENT_BLOCK}"),
+        1,
+    );
+
+    assert!(
+        position(&moved, "libnima: gled/zephyr.conf >>>")
+            < position(&moved, "libnima: gcore/zephyr.conf >>>"),
+        "{moved}"
+    );
+    write(&path, &moved);
+    install(&project, &first);
+    install(&project, &second);
+
+    assert_eq!(read(&path), moved);
+}
+
+#[test]
 fn a_line_adding_to_extra_conf_file_is_a_block_apart() {
     // A library can add a file of its own to EXTRA_CONF_FILE too, beside its fragment.
     let root = tempfile::tempdir().unwrap();
@@ -3205,7 +3754,7 @@ fn an_options_cmake_in_the_wrong_place_is_refused() {
         ),
         (
             "      project:\n        conf:\n          - LOG=n\n",
-            "options.report.zephyr.project has conf. It holds cmake.",
+            "options.report.zephyr.project has conf. It holds cmake, overlay.",
         ),
     ] {
         let root = tempfile::tempdir().unwrap();
@@ -3258,4 +3807,850 @@ fn tools_land_beside_cmakelists_and_run_from_there() {
 
     assert!(!project.join("tools").exists());
     assert!(project.join("sign_key.pem").is_file());
+}
+
+// ----------------------------------------------------------------------------
+// The application's devicetree overlay
+// ----------------------------------------------------------------------------
+
+const DTSI: &str = "/ {\n\tgled: gled {\n\t\tcompatible = \"pwm-leds\";\n\t};\n};\n";
+
+/// The file alone, which goes into the overlay found, or those picked when there are several.
+const ALONE: &str = "      - boards/gled.dtsi\n";
+
+/// gled's block in an overlay, with these lines.
+fn led_block(lines: &[&str]) -> String {
+    let body: String = lines.iter().map(|line| format!("{line}\n")).collect();
+
+    format!(
+        "// >>> libnima: gled >>>\n// From gled's libnima.yml, and written again on every install.\n{body}// <<< libnima: gled <<<\n"
+    )
+}
+
+/// gled, whose .dtsi a once file makes in boards/, with `overlay` under zephyr.project, and `more` of its file after it.
+fn gled_with(root: &Path, overlay: &str, more: &str, files: &[(&str, &str)]) -> PathBuf {
+    let mut all: Vec<(&str, &str)> = vec![("templates/gled.dtsi", DTSI)];
+
+    all.extend_from_slice(files);
+
+    lib_at(
+        root,
+        "gled",
+        &format!(
+            "requires:\n  libnima: 1.3.0\nonce:\n  - from: templates/gled.dtsi\n    to: boards/gled.dtsi\nzephyr:\n  project:\n    overlay:\n{overlay}{more}"
+        ),
+        &all,
+    )
+}
+
+fn gled(root: &Path, overlay: &str) -> PathBuf {
+    gled_with(root, overlay, "", &[])
+}
+
+/// An application with these overlays, each holding a line of its own.
+fn with_overlays(root: &Path, overlays: &[&str]) -> PathBuf {
+    let files: Vec<(String, String)> = overlays
+        .iter()
+        .map(|name| ((*name).to_string(), format!("/* {name} */\n")))
+        .collect();
+    let given: Vec<(&str, &str)> = files
+        .iter()
+        .map(|(name, text)| (name.as_str(), text.as_str()))
+        .collect();
+
+    application(root, Some("CONFIG_GPIO=y\n"), &given, false)
+}
+
+fn two_boards(root: &Path) -> PathBuf {
+    with_overlays(root, &["boards/alpha.overlay", "boards/beta.overlay"])
+}
+
+/// Install into modules/<name>, with these answers to the questions.
+fn answered(project: &Path, library: &Path, answers: &[&str]) -> (i32, Watched) {
+    let mut ui = Watched::answering(answers);
+    let name = library.file_name().unwrap().to_string_lossy().into_owned();
+    let code = flow::run_with(
+        offline(),
+        &asked(project, library, Some(&format!("modules/{name}"))),
+        &mut ui,
+    );
+
+    (code, ui)
+}
+
+/// Install into modules/gled, with --overlay given.
+fn with_overlay_given(project: &Path, library: &Path, given: &str) -> (i32, Watched) {
+    let mut request = asked(project, library, Some("modules/gled"));
+
+    request.args.overlay = Some(given.to_string());
+
+    run(&request)
+}
+
+fn overlay_questions(ui: &Watched) -> usize {
+    ui.asked
+        .iter()
+        .filter(|prompt| prompt.contains("Overlay for the libraries' devicetree"))
+        .count()
+}
+
+fn has_gled(project: &Path, overlay: &str) -> bool {
+    read(project.join(overlay)).contains(">>> libnima: gled >>>")
+}
+
+#[test]
+fn a_file_alone_goes_into_the_only_overlay_without_a_question() {
+    let root = tempfile::tempdir().unwrap();
+    let project = with_overlays(root.path(), &["boards/board_a.overlay"]);
+    let ui = install(&project, &gled(root.path(), ALONE));
+
+    assert_eq!(
+        read(project.join("boards/board_a.overlay")),
+        format!(
+            "/* boards/board_a.overlay */\n\n{}",
+            led_block(&["#include \"gled.dtsi\""])
+        )
+    );
+    assert_eq!(overlay_questions(&ui), 0, "{:?}", ui.asked);
+    assert!(
+        ui.out().contains("Added gled to boards/board_a.overlay."),
+        "{}",
+        ui.out()
+    );
+    assert!(record(&project)["gled"]["blocks"]["boards/board_a.overlay"]["gled"].is_string());
+}
+
+#[test]
+fn a_second_install_changes_nothing_in_the_overlay() {
+    let root = tempfile::tempdir().unwrap();
+    let project = with_overlays(root.path(), &["boards/board_a.overlay"]);
+    let library = gled(root.path(), ALONE);
+
+    install(&project, &library);
+
+    let before = read(project.join("boards/board_a.overlay"));
+    let saved = all_backups(&project);
+    let ui = install(&project, &library);
+
+    assert_eq!(read(project.join("boards/board_a.overlay")), before);
+    assert_eq!(all_backups(&project), saved);
+    assert!(
+        ui.out()
+            .contains("boards/board_a.overlay already has gled."),
+        "{}",
+        ui.out()
+    );
+}
+
+#[test]
+fn the_include_names_the_file_from_the_overlays_own_folder() {
+    for (overlay, wanted) in [
+        ("app.overlay", "boards/gled.dtsi"),
+        ("socs/nrf54l15_cpuapp.overlay", "../boards/gled.dtsi"),
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let project = with_overlays(root.path(), &[overlay]);
+
+        install(&project, &gled(root.path(), ALONE));
+
+        let text = read(project.join(overlay));
+
+        assert!(
+            text.contains(&format!("\n#include \"{wanted}\"\n")),
+            "{overlay}\n{text}"
+        );
+    }
+}
+
+#[test]
+fn a_file_of_the_librarys_own_is_named_in_its_folder() {
+    let root = tempfile::tempdir().unwrap();
+    let project = with_overlays(root.path(), &["boards/board_a.overlay"]);
+    let library = gled_with(
+        root.path(),
+        "      - '{library}/dts/gled_nodes.dtsi'\n",
+        "extras:\n  - dts/gled_nodes.dtsi\n",
+        &[("dts/gled_nodes.dtsi", DTSI)],
+    );
+
+    install(&project, &library);
+
+    let text = read(project.join("boards/board_a.overlay"));
+
+    assert!(
+        text.contains("\n#include \"../modules/gled/dts/gled_nodes.dtsi\"\n"),
+        "{text}"
+    );
+}
+
+#[test]
+fn an_application_with_no_overlay_gets_app_overlay() {
+    let root = tempfile::tempdir().unwrap();
+    let project = plain_app(root.path());
+
+    install(&project, &gled(root.path(), ALONE));
+
+    assert_eq!(
+        read(project.join("app.overlay")),
+        led_block(&["#include \"boards/gled.dtsi\""])
+    );
+}
+
+#[test]
+fn several_overlays_are_asked_about_and_the_answer_picks() {
+    for (answer, alpha, beta) in [
+        ("2", false, true),
+        ("1,2", true, true),
+        ("*", true, true),
+        ("beta", false, true),
+        ("boards/al*", true, false),
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let project = two_boards(root.path());
+        let (code, ui) = answered(&project, &gled(root.path(), ALONE), &[answer]);
+
+        assert_eq!(code, 0, "{}", ui.err());
+        assert_eq!(overlay_questions(&ui), 1, "{:?}", ui.asked);
+        assert_eq!(
+            has_gled(&project, "boards/alpha.overlay"),
+            alpha,
+            "{answer}"
+        );
+        assert_eq!(has_gled(&project, "boards/beta.overlay"), beta, "{answer}");
+    }
+}
+
+#[test]
+fn nobody_to_choose_among_several_puts_the_lines_in_none() {
+    for answers in [&[][..], &[""][..], &["gamma"][..]] {
+        let root = tempfile::tempdir().unwrap();
+        let project = two_boards(root.path());
+        let before = snapshot(&project, &["boards/alpha.overlay", "boards/beta.overlay"]);
+        let (code, ui) = answered(&project, &gled(root.path(), ALONE), answers);
+
+        assert_eq!(code, 0, "{}", ui.err());
+        assert_eq!(
+            snapshot(&project, &["boards/alpha.overlay", "boards/beta.overlay"]),
+            before
+        );
+        assert!(
+            ui.out()
+                .contains("Devicetree overlay  Some of gled's devicetree goes into no overlay"),
+            "{}",
+            ui.out()
+        );
+        assert!(
+            ui.out()
+                .contains("#include \"boards/gled.dtsi\"  (no overlay was chosen for it)"),
+            "{}",
+            ui.out()
+        );
+    }
+}
+
+#[test]
+fn the_overlays_are_asked_about_once_for_every_library_of_the_run() {
+    let root = tempfile::tempdir().unwrap();
+    let project = two_boards(root.path());
+    let first = gled(root.path(), ALONE);
+    let second = lib_at(
+        root.path(),
+        "gbuzz",
+        "requires:\n  libnima: 1.3.0\nonce:\n  - from: templates/gbuzz.dtsi\n    to: boards/gbuzz.dtsi\nzephyr:\n  project:\n    overlay:\n      - boards/gbuzz.dtsi\n",
+        &[("templates/gbuzz.dtsi", DTSI)],
+    );
+    let mut ui = Watched::answering(&["2"]);
+    let code = flow::run_with(
+        offline(),
+        &common::request(&project, &[&first, &second]),
+        &mut ui,
+    );
+    let beta = read(project.join("boards/beta.overlay"));
+
+    assert_eq!(code, 0, "{}", ui.err());
+    assert_eq!(overlay_questions(&ui), 1, "{:?}", ui.asked);
+    assert!(
+        beta.contains("#include \"gled.dtsi\"") && beta.contains("#include \"gbuzz.dtsi\""),
+        "{beta}"
+    );
+    assert!(!read(project.join("boards/alpha.overlay")).contains("libnima"));
+}
+
+#[test]
+fn to_names_the_overlay_without_a_question() {
+    let root = tempfile::tempdir().unwrap();
+    let project = two_boards(root.path());
+    let (code, ui) = answered(
+        &project,
+        &gled(
+            root.path(),
+            "      - from: boards/gled.dtsi\n        to: boards/beta.overlay\n",
+        ),
+        &[],
+    );
+
+    assert_eq!(code, 0, "{}", ui.err());
+    assert_eq!(overlay_questions(&ui), 0, "{:?}", ui.asked);
+    assert!(has_gled(&project, "boards/beta.overlay"));
+    assert!(!has_gled(&project, "boards/alpha.overlay"));
+}
+
+#[test]
+fn to_naming_an_overlay_the_application_has_not_makes_none() {
+    let root = tempfile::tempdir().unwrap();
+    let project = two_boards(root.path());
+    let (code, ui) = answered(
+        &project,
+        &gled(
+            root.path(),
+            "      - from: boards/gled.dtsi\n        to: boards/gamma.overlay\n",
+        ),
+        &[],
+    );
+
+    assert_eq!(code, 0, "{}", ui.err());
+    assert!(!project.join("boards/gamma.overlay").exists());
+    assert!(
+        ui.out().contains(
+            "boards/gled.dtsi goes into no overlay: the application has no boards/gamma.overlay"
+        ),
+        "{}",
+        ui.out()
+    );
+}
+
+#[test]
+fn a_wildcard_takes_every_overlay_it_matches_and_none_takes_none() {
+    let root = tempfile::tempdir().unwrap();
+    let project = with_overlays(
+        root.path(),
+        &[
+            "boards/alpha.overlay",
+            "boards/beta.overlay",
+            "socs/chip.overlay",
+        ],
+    );
+    let (code, ui) = answered(
+        &project,
+        &gled(
+            root.path(),
+            "      - from: boards/gled.dtsi\n        to: boards/*.overlay\n",
+        ),
+        &[],
+    );
+
+    assert_eq!(code, 0, "{}", ui.err());
+    assert!(has_gled(&project, "boards/alpha.overlay"));
+    assert!(has_gled(&project, "boards/beta.overlay"));
+    assert!(!has_gled(&project, "socs/chip.overlay"));
+
+    let other = tempfile::tempdir().unwrap();
+    let plain = plain_app(other.path());
+    let (code, ui) = answered(
+        &plain,
+        &gled(
+            other.path(),
+            "      - from: boards/gled.dtsi\n        to: socs/*.overlay\n",
+        ),
+        &[],
+    );
+
+    assert_eq!(code, 0, "{}", ui.err());
+    assert!(!plain.join("app.overlay").exists());
+    assert!(
+        ui.out()
+            .contains("socs/*.overlay matches no overlay of the application"),
+        "{}",
+        ui.out()
+    );
+}
+
+#[test]
+fn sysbuild_overlays_are_never_offered_but_to_can_name_one() {
+    let root = tempfile::tempdir().unwrap();
+    let project = with_overlays(
+        root.path(),
+        &["boards/alpha.overlay", "sysbuild/mcuboot.overlay"],
+    );
+    let library = gled(
+        root.path(),
+        "      - boards/gled.dtsi\n      - from: boards/gled.dtsi\n        to: sysbuild/mcuboot.overlay\n",
+    );
+    let (code, ui) = answered(&project, &library, &[]);
+
+    assert_eq!(code, 0, "{}", ui.err());
+    assert_eq!(overlay_questions(&ui), 0, "{:?}", ui.asked);
+    assert!(read(project.join("boards/alpha.overlay")).contains("\n#include \"gled.dtsi\"\n"));
+    assert!(
+        read(project.join("sysbuild/mcuboot.overlay"))
+            .contains("\n#include \"../boards/gled.dtsi\"\n")
+    );
+}
+
+#[test]
+fn overlay_on_the_command_line_goes_before_what_the_library_says() {
+    let root = tempfile::tempdir().unwrap();
+    let project = two_boards(root.path());
+    let (code, ui) = with_overlay_given(
+        &project,
+        &gled(
+            root.path(),
+            "      - from: boards/gled.dtsi\n        to: boards/alpha.overlay\n",
+        ),
+        "boards/beta.overlay",
+    );
+
+    assert_eq!(code, 0, "{}", ui.err());
+    assert!(has_gled(&project, "boards/beta.overlay"));
+    assert!(!has_gled(&project, "boards/alpha.overlay"));
+}
+
+#[test]
+fn an_overlay_the_command_line_names_in_full_is_made_when_missing() {
+    let root = tempfile::tempdir().unwrap();
+    let project = two_boards(root.path());
+    let (code, ui) =
+        with_overlay_given(&project, &gled(root.path(), ALONE), "boards/gamma.overlay");
+
+    assert_eq!(code, 0, "{}", ui.err());
+    assert_eq!(
+        read(project.join("boards/gamma.overlay")),
+        led_block(&["#include \"gled.dtsi\""])
+    );
+    assert_eq!(overlay_questions(&ui), 0, "{:?}", ui.asked);
+}
+
+#[test]
+fn an_overlay_option_that_names_no_overlay_is_refused() {
+    for given in ["boards/x.conf", "../x.overlay", "{library}/x.overlay"] {
+        let root = tempfile::tempdir().unwrap();
+        let project = two_boards(root.path());
+        let before = snapshot(
+            &project,
+            &["boards/alpha.overlay", "CMakeLists.txt", "prj.conf"],
+        );
+        let (code, ui) = with_overlay_given(&project, &gled(root.path(), ALONE), given);
+
+        assert_ne!(code, 0, "{given}");
+        assert!(
+            ui.err().contains(&format!("--overlay has {given}")),
+            "{}",
+            ui.err()
+        );
+        assert_eq!(
+            snapshot(
+                &project,
+                &["boards/alpha.overlay", "CMakeLists.txt", "prj.conf"]
+            ),
+            before
+        );
+    }
+}
+
+#[test]
+fn an_update_keeps_a_file_alone_where_it_went_without_asking_again() {
+    let root = tempfile::tempdir().unwrap();
+    let project = two_boards(root.path());
+    let library = gled(root.path(), ALONE);
+
+    answered(&project, &library, &["2"]);
+
+    let (code, ui) = answered(&project, &library, &[]);
+
+    assert_eq!(code, 0, "{}", ui.err());
+    assert_eq!(overlay_questions(&ui), 0, "{:?}", ui.asked);
+    assert!(has_gled(&project, "boards/beta.overlay"));
+    assert!(!has_gled(&project, "boards/alpha.overlay"));
+}
+
+#[test]
+fn an_update_moves_the_block_where_to_says_now() {
+    let root = tempfile::tempdir().unwrap();
+    let project = two_boards(root.path());
+    let alpha = read(project.join("boards/alpha.overlay"));
+
+    answered(
+        &project,
+        &gled(
+            root.path(),
+            "      - from: boards/gled.dtsi\n        to: boards/alpha.overlay\n",
+        ),
+        &[],
+    );
+    assert!(has_gled(&project, "boards/alpha.overlay"));
+
+    answered(
+        &project,
+        &gled(
+            root.path(),
+            "      - from: boards/gled.dtsi\n        to: boards/beta.overlay\n",
+        ),
+        &[],
+    );
+
+    assert_eq!(read(project.join("boards/alpha.overlay")), alpha);
+    assert!(has_gled(&project, "boards/beta.overlay"));
+}
+
+#[test]
+fn an_update_without_the_key_takes_the_block_out() {
+    let root = tempfile::tempdir().unwrap();
+    let project = with_overlays(root.path(), &["boards/board_a.overlay"]);
+    let before = read(project.join("boards/board_a.overlay"));
+
+    install(&project, &gled(root.path(), ALONE));
+    install(
+        &project,
+        &lib_at(
+            root.path(),
+            "gled",
+            "requires:\n  libnima: 1.3.0\nonce:\n  - from: templates/gled.dtsi\n    to: boards/gled.dtsi\n",
+            &[("templates/gled.dtsi", DTSI)],
+        ),
+    );
+
+    assert_eq!(read(project.join("boards/board_a.overlay")), before);
+}
+
+#[test]
+fn an_uninstall_gives_every_overlay_back_as_it_was() {
+    let root = tempfile::tempdir().unwrap();
+    let project = two_boards(root.path());
+    let before = snapshot(&project, &["boards/alpha.overlay", "boards/beta.overlay"]);
+
+    answered(&project, &gled(root.path(), ALONE), &["*"]);
+    assert!(
+        has_gled(&project, "boards/alpha.overlay") && has_gled(&project, "boards/beta.overlay")
+    );
+
+    let ui = uninstall(&project, "gled");
+
+    assert_eq!(
+        snapshot(&project, &["boards/alpha.overlay", "boards/beta.overlay"]),
+        before
+    );
+    assert!(
+        project.join("boards/gled.dtsi").is_file(),
+        "the .dtsi is the application's own"
+    );
+    assert!(
+        ui.out().contains("Removed gled from boards/alpha.overlay."),
+        "{}",
+        ui.out()
+    );
+}
+
+#[test]
+fn a_file_the_overlay_includes_already_is_left_out_of_the_block() {
+    let root = tempfile::tempdir().unwrap();
+    let project = application(
+        root.path(),
+        Some("CONFIG_GPIO=y\n"),
+        &[(
+            "boards/board_a.overlay",
+            "/* mine */\n#include \"gled.dtsi\"\n",
+        )],
+        false,
+    );
+    let ui = install(&project, &gled(root.path(), ALONE));
+    let text = read(project.join("boards/board_a.overlay"));
+
+    assert!(
+        text.contains(
+            "// #include \"gled.dtsi\"  (left out: boards/board_a.overlay includes it already)\n"
+        ),
+        "{text}"
+    );
+    assert!(
+        ui.out()
+            .contains("#include \"gled.dtsi\" is left commented"),
+        "{}",
+        ui.out()
+    );
+}
+
+#[test]
+fn a_file_that_is_not_there_is_left_out_of_the_block() {
+    let root = tempfile::tempdir().unwrap();
+    let project = with_overlays(root.path(), &["boards/board_a.overlay"]);
+    let ui = install(
+        &project,
+        &gled(root.path(), "      - boards/missing.dtsi\n"),
+    );
+    let text = read(project.join("boards/board_a.overlay"));
+
+    assert!(
+        text.contains(
+            "// #include \"missing.dtsi\"  (left out: boards/missing.dtsi is not there)\n"
+        ),
+        "{text}"
+    );
+    assert!(
+        ui.out()
+            .contains("boards/missing.dtsi is not in the application"),
+        "{}",
+        ui.out()
+    );
+}
+
+#[test]
+fn a_crlf_overlay_stays_crlf() {
+    let root = tempfile::tempdir().unwrap();
+    let project = application(
+        root.path(),
+        Some("CONFIG_GPIO=y\n"),
+        &[("boards/board_a.overlay", "/* a */\n")],
+        true,
+    );
+
+    install(&project, &gled(root.path(), ALONE));
+
+    let text = read(project.join("boards/board_a.overlay"));
+
+    assert!(text.contains(">>> libnima: gled >>>"), "{text}");
+    assert_eq!(
+        text.matches('\n').count(),
+        text.matches("\r\n").count(),
+        "{text:?}"
+    );
+}
+
+#[test]
+fn a_half_written_block_in_an_overlay_is_left_for_the_user() {
+    let root = tempfile::tempdir().unwrap();
+    let broken = "/* a */\n// >>> libnima: gled >>>\n";
+    let project = application(
+        root.path(),
+        Some("CONFIG_GPIO=y\n"),
+        &[("boards/board_a.overlay", broken)],
+        false,
+    );
+    let ui = install(&project, &gled(root.path(), ALONE));
+
+    assert_eq!(read(project.join("boards/board_a.overlay")), broken);
+    assert!(
+        ui.out()
+            .contains("boards/board_a.overlay has a half written libnima block for gled"),
+        "{}",
+        ui.out()
+    );
+}
+
+#[test]
+fn titles_and_notes_are_comments_of_the_overlay() {
+    let root = tempfile::tempdir().unwrap();
+    let project = with_overlays(root.path(), &["boards/board_a.overlay"]);
+
+    install(
+        &project,
+        &gled(
+            root.path(),
+            "      The LEDs:\n        - boards/gled.dtsi: their PWM and their pins\n",
+        ),
+    );
+
+    let stars = format!("// {}", "*".repeat(78));
+    let text = read(project.join("boards/board_a.overlay"));
+
+    assert!(
+        text.contains(&format!(
+            "// From gled's libnima.yml, and written again on every install.\n\n{stars}\n// The LEDs\n{stars}\n// their PWM and their pins\n#include \"gled.dtsi\"\n"
+        )),
+        "{text}"
+    );
+}
+
+#[test]
+fn an_options_includes_go_in_while_it_is_taken() {
+    let root = tempfile::tempdir().unwrap();
+    let project = with_overlays(root.path(), &["boards/board_a.overlay"]);
+    let library = lib_at(
+        root.path(),
+        "gled",
+        "requires:\n  libnima: 1.3.0\nonce:\n  - from: templates/gled.dtsi\n    to: boards/gled.dtsi\n  - from: templates/fade.dtsi\n    to: boards/fade.dtsi\nzephyr:\n  project:\n    overlay:\n      - boards/gled.dtsi\noptions:\n  fade:\n    description: Fading\n    sources:\n      - src/fade.c\n    zephyr:\n      project:\n        overlay:\n          - boards/fade.dtsi\n",
+        &[
+            ("templates/gled.dtsi", DTSI),
+            ("templates/fade.dtsi", DTSI),
+            ("src/fade.c", "int fade;\n"),
+        ],
+    );
+    let mut request = asked(&project, &library, Some("modules/gled"));
+
+    request.with_options = vec!["fade".to_string()];
+
+    let (code, ui) = run(&request);
+
+    assert_eq!(code, 0, "{}", ui.err());
+    assert!(
+        read(project.join("boards/board_a.overlay"))
+            .contains("\n#include \"gled.dtsi\"\n#include \"fade.dtsi\"\n")
+    );
+
+    let mut request = asked(&project, &library, Some("modules/gled"));
+
+    request.without_options = vec!["fade".to_string()];
+
+    let (code, ui) = run(&request);
+    let text = read(project.join("boards/board_a.overlay"));
+
+    assert_eq!(code, 0, "{}", ui.err());
+    assert!(
+        text.contains("\n#include \"gled.dtsi\"\n") && !text.contains("fade.dtsi"),
+        "{text}"
+    );
+}
+
+#[test]
+fn an_overlay_entry_that_cannot_be_written_is_refused() {
+    for (overlay, says) in [
+        (
+            "      - from: boards/x.dtsi\n        to: boards/x.conf\n",
+            "that is no overlay",
+        ),
+        (
+            "      - from: boards/x.dtsi\n        to: '{library}/x.overlay'\n",
+            "so it has no {library}",
+        ),
+        (
+            "      - ../x.dtsi\n",
+            "outside the application's folder: it climbs out with '..'",
+        ),
+        (
+            "      - '{library}/../x.dtsi'\n",
+            "outside the library's folder",
+        ),
+        ("      - boards/*.dtsi\n", "a wildcard"),
+        (
+            "      - from: boards/x.dtsi\n",
+            "An entry is the file to include, or a from and a to",
+        ),
+        (
+            "      - from: boards/x.dtsi\n        to: boards/x.overlay\n        at: here\n",
+            "An entry is the file to include, or a from and a to",
+        ),
+        (
+            "      - 3\n",
+            "An entry is the file to include, or a from and a to",
+        ),
+        (
+            "      - boards/x.dtsi\n      - boards/x.dtsi\n",
+            "has boards/x.dtsi more than once.",
+        ),
+        (
+            "      - from: boards/x.dtsi\n        to: boards/x.overlay\n      - from: boards/x.dtsi\n        to: boards/x.overlay\n",
+            "more than once, into boards/x.overlay.",
+        ),
+    ] {
+        let message = refused(&format!("  project:\n    overlay:\n{overlay}"));
+
+        assert!(message.contains(says), "{overlay}\n{message}");
+    }
+}
+
+#[test]
+fn an_options_overlay_is_read_as_the_librarys_is() {
+    let root = tempfile::tempdir().unwrap();
+    let option = |zephyr: &str| {
+        format!(
+            "options:\n  fast:\n    description: Fast\n    sources:\n      - src/fast.c\n    zephyr:\n      project:\n{zephyr}"
+        )
+    };
+    let library = gcore_with(
+        root.path(),
+        "",
+        &option("        overlay:\n          - ../x.dtsi\n"),
+        &[("src/fast.c", "")],
+    );
+    let message = read_it(&library).unwrap_err();
+
+    assert!(
+        message.contains("options.fast.zephyr.project.overlay has '../x.dtsi'"),
+        "{message}"
+    );
+
+    let library = gcore_with(
+        root.path(),
+        "",
+        &option("        sysbuild:\n          - X\n"),
+        &[("src/fast.c", "")],
+    );
+    let message = read_it(&library).unwrap_err();
+
+    assert!(message.contains("It holds cmake, overlay."), "{message}");
+}
+
+#[test]
+fn a_file_nothing_puts_there_and_an_older_libnima_are_said() {
+    let manifest = loaded("  project:\n    overlay:\n      - boards/x.dtsi\n");
+    let said = manifest.warnings.join("\n");
+
+    assert!(
+        said.contains(
+            "zephyr.project.overlay has boards/x.dtsi, which nothing in this file puts there"
+        ),
+        "{said}"
+    );
+    assert!(
+        said.contains("zephyr.project.overlay is new in libNIMA 1.3.0"),
+        "{said}"
+    );
+
+    let root = tempfile::tempdir().unwrap();
+    let quiet = read_it(&gled(root.path(), ALONE)).unwrap();
+
+    assert!(
+        quiet
+            .warnings
+            .iter()
+            .all(|warning| !warning.contains("overlay")),
+        "{:?}",
+        quiet.warnings
+    );
+}
+
+#[test]
+fn a_check_says_where_each_include_goes_and_writes_nothing() {
+    let root = tempfile::tempdir().unwrap();
+    let project = with_overlays(root.path(), &["boards/board_a.overlay"]);
+    let before = read(project.join("boards/board_a.overlay"));
+    let mut request = asked(&project, &gled(root.path(), ALONE), None);
+
+    request.check_only = true;
+
+    let (code, ui) = run(&request);
+
+    assert_eq!(code, 0, "{}", ui.err());
+    assert_eq!(read(project.join("boards/board_a.overlay")), before);
+    assert!(
+        ui.out()
+            .contains("An #include of boards/gled.dtsi goes into boards/board_a.overlay"),
+        "{}",
+        ui.out()
+    );
+}
+
+#[test]
+fn the_window_offers_the_overlays_of_the_application() {
+    let root = tempfile::tempdir().unwrap();
+    let project = with_overlays(
+        root.path(),
+        &[
+            "boards/beta.overlay",
+            "app.overlay",
+            "socs/chip.overlay",
+            "boards/alpha.overlay",
+            "sysbuild/mcuboot.overlay",
+            "build/zephyr/zephyr.overlay",
+        ],
+    );
+
+    assert_eq!(
+        libnima_core::look::project(&project, None).overlay_files,
+        [
+            "app.overlay",
+            "boards/alpha.overlay",
+            "boards/beta.overlay",
+            "socs/chip.overlay"
+        ]
+    );
 }

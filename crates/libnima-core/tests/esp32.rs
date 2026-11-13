@@ -598,6 +598,76 @@ fn project_cmake_goes_into_the_projects_cmakelists_by_its_place() {
     );
 }
 
+#[test]
+fn an_update_keeps_every_librarys_cmake_blocks_where_they_are() {
+    // Each block went right above include(project.cmake), or to the end, on every install, below the other libraries'
+    // ones, so the order followed the last install, and an install that changed nothing still left a .bak.
+    let root = tempfile::tempdir().unwrap();
+    let project = plain_app(root.path());
+    let cmake_of = |name: &str| {
+        format!(
+            "esp32:\n  project:\n    cmake:\n      before-project:\n        - set({name}_ON 1)\n      after-project:\n        - 'message(STATUS \"{name}\")'\n"
+        )
+    };
+    let first = lib_at(root.path(), "demo", &cmake_of("demo"), &[]);
+    let second = lib_at(root.path(), "other", &cmake_of("other"), &[]);
+
+    install(&project, &first);
+    install(&project, &second);
+
+    let text = read(project.join("CMakeLists.txt"));
+    let saved = backups(&project, "CMakeLists.txt");
+
+    install(&project, &first);
+
+    assert_eq!(read(project.join("CMakeLists.txt")), text);
+    assert_eq!(backups(&project, "CMakeLists.txt"), saved);
+
+    for place in ["before-project", "after-project"] {
+        assert!(
+            text.find(&format!("libnima: demo/{place} >>>"))
+                < text.find(&format!("libnima: other/{place} >>>")),
+            "{text}"
+        );
+    }
+}
+
+#[test]
+fn a_block_of_after_project_above_project_goes_below_it() {
+    // The project's targets exist from project() on, not from include(project.cmake).
+    let root = tempfile::tempdir().unwrap();
+    let project = plain_app(root.path());
+    let library = demo(
+        root.path(),
+        "  project:\n    cmake:\n      after-project:\n        - 'message(STATUS \"after\")'\n",
+    );
+    let block = format!(
+        "# >>> libnima: demo/after-project >>>\n{FROM}message(STATUS \"after\")\n# <<< libnima: demo/after-project <<<\n"
+    );
+
+    install(&project, &library);
+
+    let path = project.join("CMakeLists.txt");
+    let text = read(&path);
+
+    assert!(
+        text.ends_with(&format!("project(app)\n\n{block}")),
+        "{text}"
+    );
+
+    write(
+        &path,
+        &text.replacen(&format!("\n{block}"), "", 1).replacen(
+            "project(app)\n",
+            &format!("{block}project(app)\n"),
+            1,
+        ),
+    );
+    install(&project, &library);
+
+    assert_eq!(read(&path), text);
+}
+
 // ----------------------------------------------------------------------------
 // main/CMakeLists.txt
 // ----------------------------------------------------------------------------

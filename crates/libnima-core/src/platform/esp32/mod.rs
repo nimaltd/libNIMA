@@ -213,8 +213,14 @@ pub fn read_part(library: &mut Manifest, data: &Mapping) -> Result<Esp32Part, Ma
             ));
         }
 
-        option.cmake =
-            titles::option_cmake(&option.name, given, "esp32", &PLACES, COMPONENT_PLACE)?;
+        option.cmake = titles::option_cmake(
+            &option.name,
+            given,
+            "esp32",
+            &PLACES,
+            COMPONENT_PLACE,
+            &["cmake"],
+        )?;
     }
 
     // A label names one group, among the library's and all its options'.
@@ -346,15 +352,10 @@ impl Target for Esp32 {
 
     /// The project's files this edits or reads as the project's own, which a once file must never be.
     fn managed_files(&self, _project_root: &Path, _library: &Manifest) -> Vec<String> {
-        [
-            crate::record::RECORD_NAME,
-            project::CMAKELISTS,
-            project::MAIN,
-            project::SDKCONFIG,
-            project::DEFAULTS,
-        ]
-        .map(String::from)
-        .to_vec()
+        super::managed_patterns(Platform::Esp32)
+            .into_iter()
+            .map(String::from)
+            .collect()
     }
 
     /// What the project is missing for this library. Never stops an install.

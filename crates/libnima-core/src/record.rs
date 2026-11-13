@@ -160,7 +160,14 @@ pub fn recorded_platform(folder: &Path) -> Option<Platform> {
 /// Write a record back. Never fails: a read-only project root is unusual, but it must not fail a good
 /// install.
 pub fn write_record(path: &Path, record: Map<String, Value>) {
-    let _ = files::write(path, &json_sorted_text(&Value::Object(record)));
+    let text = json_sorted_text(&Value::Object(record));
+
+    // The same text is not written again: a run that changed nothing leaves the record as it was, to the byte.
+    if files::read(path).is_ok_and(|have| have == text) {
+        return;
+    }
+
+    let _ = files::write(path, &text);
 }
 
 #[cfg(test)]

@@ -1414,8 +1414,38 @@ fn uninstall_and_install_are_not_mixed() {
 }
 
 #[test]
+fn an_uninstall_where_nothing_was_installed_says_so() {
+    // Not which platform it is: nothing of libNIMA's is here, with --platform or without.
+    for platform in [None, Some(libnima_core::platform::Platform::Stm32)] {
+        let root = tempfile::tempdir().unwrap();
+        let asked = libnima_core::flow::Request {
+            uninstall: vec!["demo".to_string()],
+            project: Some(root.path().to_path_buf()),
+            platform,
+            ..Default::default()
+        };
+        let mut ui = Watched::default();
+
+        assert_eq!(flow::run(&asked, &mut ui), 2);
+        assert!(
+            ui.err()
+                .contains("demo is not installed in this project: it has no .libnima.json"),
+            "{}",
+            ui.err()
+        );
+        assert!(libnima_core::paths::files_below(root.path()).is_empty());
+    }
+}
+
+#[test]
 fn nothing_to_say_which_platform_an_uninstall_is_refused() {
+    // A record that names no platform, with nothing in the folder to tell.
     let root = tempfile::tempdir().unwrap();
+    write(
+        root.path().join(".libnima.json"),
+        "{\"record\": 3, \"libraries\": {}}\n",
+    );
+
     let asked = libnima_core::flow::Request {
         uninstall: vec!["demo".to_string()],
         project: Some(root.path().to_path_buf()),

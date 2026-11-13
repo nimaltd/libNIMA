@@ -27,7 +27,12 @@ use console::Terminal;
     name = "libnima",
     version = libnima_core::VERSION,
     infer_long_args = true,
-    after_help = "Run this from the root of your project."
+    after_help = "Run this from the root of your project.\n\n\
+                  Exit codes:\n  \
+                  0  done, or nothing found to report\n  \
+                  1  --check found something to do first (CHECK) or a library that cannot go in (NO), --lint found an \
+                  error, or a run step failed once its library was in\n  \
+                  2  a mistake in the command line, or a run that was refused or failed: nothing of it was written"
 )]
 struct Args {
     /// What to install: a name like "owner/example", a GitHub URL, a downloaded .zip, or a folder. Give several to install
@@ -125,6 +130,12 @@ struct Args {
     #[arg(long, help_heading = "Zephyr only", value_name = "FILE")]
     conf: Option<String>,
 
+    /// The overlay of the application that includes a library's devicetree files, such as boards/nrf52840dk_nrf52840.overlay,
+    /// or every one a wildcard matches, such as 'boards/*.overlay', in place of what the library's libnima.yml says. Asked
+    /// when the application has more than one and the library names none.
+    #[arg(long, help_heading = "Zephyr only", value_name = "FILE")]
+    overlay: Option<String>,
+
     /// Where the libraries go: libraries, the sketchbook's libraries folder, for every sketch, or sketch, the src folder of the
     /// sketch this is run from, for it only. Asked when run from a sketch, libraries otherwise.
     #[arg(long, help_heading = "Arduino only", value_parser = ["libraries", "sketch"])]
@@ -194,6 +205,8 @@ fn run_lint(folder: &Path, ui: &mut Terminal) -> u8 {
         .unwrap_or_default()
         .to_string_lossy()
         .into_owned();
+    // The verdict says which file it is about, as a folder can be given before --lint, or none at all.
+    let whole = paths::posix(&path);
     let failed = problems.iter().any(|problem| !problem.warning);
 
     for problem in &problems {
@@ -218,9 +231,9 @@ fn run_lint(folder: &Path, ui: &mut Terminal) -> u8 {
     }
 
     ui.say(report::good(if problems.is_empty() {
-        format!("{name} is good.")
+        format!("{whole} is good.")
     } else {
-        format!("{name} can be read, with what is said above.")
+        format!("{whole} can be read, with what is said above.")
     }));
 
     0
@@ -299,9 +312,57 @@ fn run_path(adding: bool, ui: &mut Terminal) -> u8 {
     }
 }
 
-fn run(args: Args) -> u8 {
+/// What in the command line would go unused: two of the runs that are each a run of their own, or something beside one
+/// of them it does not take. A folder given before --lint or --convert, with none after it, is the one it takes. None
+/// when every argument is used.
+fn unused(args: &mut Args) -> Option<String> {
+    let modes: Vec<&str> = [
+        (args.schema, "--schema"),
+        (args.lint.is_some(), "--lint"),
+        (args.convert.is_some(), "--convert"),
+    ]
+    .into_iter()
+    .filter_map(|(given, name)| given.then_some(name))
+    .collect();
+
+    if modes.len() > 1 {
+        return Some(format!(
+            "{} are each a run of their own. Give one of them.",
+            modes.join(" and ")
+        ));
+    }
+
+    for slot in [&mut args.lint, &mut args.convert] {
+        if let Some(folder) = slot
+            && folder.is_none()
+            && args.library.len() == 1
+        {
+            *folder = Some(PathBuf::from(args.library.remove(0)));
+        }
+    }
+
+    match modes.first() {
+        Some(mode) if !args.library.is_empty() => Some(format!(
+            "{mode} takes {}, so {} would go unused.",
+            if *mode == "--schema" {
+                "nothing more"
+            } else {
+                "one folder"
+            },
+            args.library.join(" and ")
+        )),
+        _ => None,
+    }
+}
+
+fn run(mut args: Args) -> u8 {
     let mut ui = Terminal::new(args.yes);
     let here = args.project.clone().unwrap_or_else(|| PathBuf::from("."));
+
+    if let Some(problem) = unused(&mut args) {
+        ui.error(&problem);
+        return 2;
+    }
 
     if args.schema {
         println!(
@@ -354,6 +415,7 @@ fn run(args: Args) -> u8 {
         args: PlatformArgs {
             ide: args.ide,
             conf: args.conf,
+            overlay: args.overlay,
             into: args.into,
             sketchbook: args.sketchbook,
             uninstalling: Vec::new(),
@@ -419,6 +481,35 @@ mod tests {
         assert_eq!(parse(&["--lint"]).lint, Some(None));
         assert_eq!(parse(&["--lint", "a"]).lint, Some(Some(PathBuf::from("a"))));
         assert_eq!(parse(&["--convert"]).convert, Some(None));
+    }
+
+    #[test]
+    fn every_argument_is_used_or_refused() {
+        // A folder before --lint is the one it takes.
+        let mut before = parse(&["../bad", "--lint"]);
+        assert!(unused(&mut before).is_none());
+        assert_eq!(before.lint, Some(Some(PathBuf::from("../bad"))));
+
+        for words in [
+            &["--lint", "good", "bad"][..],
+            &["--lint", "bad", "--schema"],
+            &["--schema", "x"],
+            &["--lint", "--convert"],
+        ] {
+            let mut args = parse(words);
+
+            assert!(unused(&mut args).is_some(), "{words:?}");
+        }
+
+        assert!(unused(&mut parse(&["--schema"])).is_none());
+        assert!(unused(&mut parse(&["a", "b"])).is_none());
+    }
+
+    #[test]
+    fn the_help_says_what_the_exit_codes_mean() {
+        let help = Args::command().render_long_help().to_string();
+
+        assert!(help.contains("Exit codes:"), "{help}");
     }
 
     #[test]

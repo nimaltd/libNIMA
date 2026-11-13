@@ -126,6 +126,13 @@ pub struct InstallResult {
     /// What each extra written holds, the whole of it, since an extra has no sections of the user's: in the
     /// library's folder and in the project's. Kept in the record for the same reason.
     pub extras: Vec<(PathBuf, String)>,
+    /// The files of installed and placed that held what this install has for them already, and were left as they were,
+    /// so they are not said to be written.
+    pub unchanged: Vec<PathBuf>,
+    /// What the template of each once file held, for the record.
+    pub templates: Vec<(PathBuf, String)>,
+    /// The once files kept whose template changed since the last install: (file, template, as the library names it).
+    pub templates_changed: Vec<(PathBuf, String)>,
 }
 
 impl InstallResult {
@@ -299,6 +306,10 @@ fn project_once(
 ) -> Result<Vec<(PathBuf, PathBuf)>, InstallError> {
     if library.once.is_empty() {
         return Ok(Vec::new());
+    }
+
+    if let Some(why) = target.once_clash(library) {
+        return Err(InstallError(why));
     }
 
     let root = check_root(library, &library.once, project_root, target)?;
@@ -701,7 +712,12 @@ fn write_extra(
             });
         }
 
-        fs::copy(source, found).map_err(|error| io_error(error, "write", found))?;
+        // One that holds these bytes already is left as it was, its time with it.
+        if fs::read(found).is_ok_and(|old| old == data) {
+            result.unchanged.push(found.to_path_buf());
+        } else {
+            fs::copy(source, found).map_err(|error| io_error(error, "write", found))?;
+        }
     }
 
     result
@@ -779,9 +795,30 @@ pub fn install_to(
         )?;
     }
 
-    // The project's own: made when missing, and never touched again, not by an update and not by an uninstall.
+    // The project's own: made when missing, and never touched again, not by an update and not by an uninstall. What its
+    // template held is kept in the record, so an update that brings another template can say so, once.
     for (template, found) in yours {
+        let held = fs::read(&template)
+            .map(|data| usercode::whole_fingerprint(&data))
+            .unwrap_or_default();
+
         if found.exists() {
+            let known = match (&previous, project_root) {
+                (Some(previous), Some(project_root)) => previous
+                    .get("templates")
+                    .and_then(|templates| templates.get(relative_text(&found, project_root)))
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                _ => None,
+            };
+
+            if known.is_some_and(|known| known != held) {
+                let name = paths::posix(template.strip_prefix(&library.root).unwrap_or(&template));
+
+                result.templates_changed.push((found.clone(), name));
+            }
+
+            result.templates.push((found.clone(), held));
             result.yours_kept.push(found);
             continue;
         }
@@ -791,6 +828,7 @@ pub fn install_to(
         }
 
         fs::copy(&template, &found).map_err(|error| io_error(error, "write", &found))?;
+        result.templates.push((found.clone(), held));
         result.yours_created.push(found);
     }
 
@@ -931,6 +969,8 @@ fn write_one(
             // nothing.
             if moved || old != merged.data {
                 fs::write(found, &merged.data).map_err(|error| io_error(error, "write", found))?;
+            } else {
+                result.unchanged.push(found.to_path_buf());
             }
 
             data = merged.data;
@@ -1336,6 +1376,12 @@ fn record_install(
         extras.insert(relative_text(path, project_root), json!(value));
     }
 
+    let mut templates = Map::new();
+
+    for (path, value) in &result.templates {
+        templates.insert(relative_text(path, project_root), json!(value));
+    }
+
     let mut yours = result.yours_created.clone();
     yours.extend(result.yours_kept.iter().cloned());
 
@@ -1346,6 +1392,23 @@ fn record_install(
         .collect();
     needs.sort();
     needs.dedup();
+
+    // The oldest version of each that will do, so a later install of one of them cannot go below it unseen.
+    let mut minimums = Map::new();
+
+    for dependency in library.dependencies() {
+        if let Some(minimum) = &dependency.minimum_text {
+            minimums.insert(dependency.name.clone(), json!(minimum));
+        }
+    }
+
+    // Which libraries this one came in for, as the run that brought it says; kept by an update.
+    let brought_by = previous
+        .as_ref()
+        .and_then(|previous| previous.get("brought_by"))
+        .filter(|value| value.is_array())
+        .cloned()
+        .unwrap_or_else(|| json!([]));
 
     let mut options = Map::new();
 
@@ -1369,6 +1432,8 @@ fn record_install(
             "once": [],
             // The once files, the project's own: never removed.
             "project_files": sorted(&yours),
+            // What the template of each held, so an update that brings another can say so.
+            "templates": templates,
             // The extras with a root: the library's own, in the project's folder, replaced on an update and removed
             // by an uninstall.
             "placed": sorted(&result.placed),
@@ -1382,14 +1447,39 @@ fn record_install(
             "extras": extras,
             "defines": library.defines,
             // The libraries this one needs, so an uninstall can refuse to take one out from under another, and say
-            // which are no longer needed.
+            // which are no longer needed, and the oldest version of each that will do.
             "needs": needs,
+            "minimums": minimums,
+            // The libraries this one went in for, when it went in because they need it, so an uninstall of them can
+            // say it is no longer needed. Empty for a library installed on its own.
+            "brought_by": brought_by,
             // Every option offered, and whether it was taken. One the record does not name is new to this project,
             // and is asked about.
             "options": options,
             "installed_at": Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
         }),
     );
+
+    // Installed again with nothing changed, it keeps the time it went in, so the record is left as it was.
+    if let Some(previous) = &previous
+        && let Some(entry) = libraries.get_mut(&library.name)
+    {
+        let without_time = |value: &Value| {
+            let mut value = value.clone();
+
+            if let Some(map) = value.as_object_mut() {
+                map.remove("installed_at");
+            }
+
+            value
+        };
+
+        if without_time(previous) == without_time(entry)
+            && let Some(when) = previous.get("installed_at")
+        {
+            entry["installed_at"] = when.clone();
+        }
+    }
 
     write_record(&path, data);
 }
@@ -1411,6 +1501,11 @@ pub fn note(project_root: &Path, name: &str, key: &str, value: Value) {
     else {
         return;
     };
+
+    // Nothing new is not written: a run that changed nothing leaves the record as it was.
+    if entry.get(key) == Some(&value) {
+        return;
+    }
 
     entry.insert(key.to_string(), value);
     write_record(&path, data);
@@ -1511,11 +1606,14 @@ pub struct Removal {
 /// created or one with something written in its USER CODE sections or changed by hand, is copied aside before it
 /// goes, as an update does. A file the library never installed is left where it is, and with it the folder.
 ///
-/// An error when the library is not installed, or another one needs it.
+/// An error when the library is not installed, or another one needs it. `leaving` is every library the run takes out:
+/// one of them needing it is no reason to keep it, so libraries that need each other go out together, and none of them
+/// is said to be left behind.
 pub fn uninstall(
     project_root: &Path,
     name: &str,
     target: &mut dyn Target,
+    leaving: &[String],
 ) -> Result<Removal, InstallError> {
     let root = paths::resolve(project_root);
     let installed = installed_libraries(&root);
@@ -1540,8 +1638,29 @@ pub fn uninstall(
             .filter(|(other, data)| *other != name && data.is_object())
     };
 
+    // A record written before needs named the library installed holds the name of the repository it came from.
+    let from_repository: Vec<String> = [
+        entry.get("repository"),
+        entry.get("origin").and_then(|origin| origin.get("source")),
+    ]
+    .into_iter()
+    .flatten()
+    .filter_map(Value::as_str)
+    .filter_map(crate::manifest::repository_key)
+    .filter_map(|key| key.split('/').nth(1).map(str::to_string))
+    .collect();
+    let needs_it = |data: &Value| {
+        strings_of(data, "needs").iter().any(|need| {
+            *need == name
+                || (!installed.contains_key(*need)
+                    && from_repository
+                        .iter()
+                        .any(|repo| repo.eq_ignore_ascii_case(need)))
+        })
+    };
+
     let mut needed_by: Vec<&str> = others()
-        .filter(|(_, data)| strings_of(data, "needs").contains(&name))
+        .filter(|(other, data)| needs_it(data) && !leaving.contains(other))
         .map(|(other, _)| other.as_str())
         .collect();
     needed_by.sort_unstable();
@@ -1671,19 +1790,44 @@ pub fn uninstall(
 
         if removal.left.is_empty() && fs::remove_dir(destination).is_ok() {
             removal.folder_removed = true;
+
+            // The folder the platform puts libraries in, such as modules/, goes too once nothing is left in it, as an
+            // empty tools/ does: the install made it. One given with --dir may be the user's own, and stays.
+            let default = crate::platform::default_folder(target.platform(), name);
+
+            if let (Some(parent), Some(usual)) =
+                (destination.parent(), Path::new(&default).parent())
+                && !usual.as_os_str().is_empty()
+                && paths::same(&paths::resolve(parent), &paths::resolve(&root.join(usual)))
+            {
+                prune(parent, &root);
+            }
         }
     }
 
     forget(&root, name);
 
     let still: Vec<&str> = others()
+        .filter(|(other, _)| !leaving.contains(other))
         .flat_map(|(_, data)| strings_of(data, "needs"))
         .collect();
+
+    // Only a library that came in for this one, and stays: one the user installed on their own is theirs.
+    let came_in_for_it = |need: &str| {
+        installed
+            .get(need)
+            .is_some_and(|entry| strings_of(entry, "brought_by").contains(&name))
+    };
 
     removal.unneeded = library
         .needs
         .iter()
-        .filter(|need| installed.contains_key(*need) && !still.contains(&need.as_str()))
+        .filter(|need| {
+            installed.contains_key(*need)
+                && !still.contains(&need.as_str())
+                && !leaving.contains(need)
+                && came_in_for_it(need)
+        })
         .cloned()
         .collect();
 
@@ -1737,6 +1881,24 @@ fn forget(project_root: &Path, name: &str) {
     }
 }
 
+/// The record an installer before libNIMA left in a project libNIMA has not run in yet, and that installer's name, or
+/// None: what the install, an uninstall and a check all go by, so they cannot tell a project apart differently.
+pub fn legacy_of(project_root: &Path, platform: Platform) -> Option<(PathBuf, &'static str)> {
+    if project_root.join(RECORD_NAME).exists() {
+        return None;
+    }
+
+    let older = project_root.join(format!(".{}.json", platform.old_installer()));
+
+    if project_root.join(OLD_RECORD_NAME).is_file() {
+        Some((project_root.join(OLD_RECORD_NAME), "lib-installer"))
+    } else if older.is_file() {
+        Some((older, leak_name(platform)))
+    } else {
+        None
+    }
+}
+
 /// Only the markers an installer before this one wrote: # >>> lib-installer: spif >>>, or ; <<< pio-installer: x
 /// <<< in platformio.ini.
 fn old_marker(installer: &str) -> Regex {
@@ -1752,23 +1914,16 @@ fn old_marker(installer: &str) -> Regex {
 /// it, and the markers of its blocks in the project's files name libnima. What is inside each block is not touched,
 /// so the record's fingerprints of them still hold. Each file is saved first, as a .bak, and keeps its line endings.
 ///
-/// Returns the files changed, the new record last, and nothing when there was nothing to move, with the name of what
-/// it moved over from.
-pub fn migrate(project_root: &Path, target: &dyn Target) -> (Vec<PathBuf>, &'static str) {
+/// Returns each file changed with the copy of it as it was, the new record last with the copy of the old one, and nothing
+/// when there was nothing to move, with the name of what it moved over from.
+pub fn migrate(
+    project_root: &Path,
+    target: &dyn Target,
+) -> (Vec<(PathBuf, PathBuf)>, &'static str) {
     let platform = target.platform();
-    let older = format!(".{}.json", platform.old_installer());
     let new = project_root.join(RECORD_NAME);
 
-    if new.exists() {
-        return (Vec::new(), "");
-    }
-
-    let (old, installer): (PathBuf, &'static str) = if project_root.join(OLD_RECORD_NAME).is_file()
-    {
-        (project_root.join(OLD_RECORD_NAME), "lib-installer")
-    } else if project_root.join(&older).is_file() {
-        (project_root.join(&older), leak_name(platform))
-    } else {
+    let Some((old, installer)) = legacy_of(project_root, platform) else {
         return (Vec::new(), "");
     };
 
@@ -1784,21 +1939,27 @@ pub fn migrate(project_root: &Path, target: &dyn Target) -> (Vec<PathBuf>, &'sta
             format!("{}{} {}: ", &found[1], &found[2], crate::blocks::INSTALLER)
         });
 
-        if updated != text && backup(&path).is_ok() && files::write(&path, &updated).is_ok() {
-            changed.push(path);
+        if updated == text {
+            continue;
+        }
+
+        if let Ok(copy) = backup(&path)
+            && files::write(&path, &updated).is_ok()
+        {
+            changed.push((path, copy));
         }
     }
 
     let mut data = read_record(&old).unwrap_or_default();
     data.insert("platform".to_string(), json!(platform.name()));
 
-    if backup(&old).is_err() {
+    let Ok(copy) = backup(&old) else {
         return (changed, installer);
-    }
+    };
 
     write_record(&new, data);
     let _ = fs::remove_file(&old);
-    changed.push(new);
+    changed.push((new, copy));
 
     (changed, installer)
 }

@@ -349,7 +349,10 @@ impl Target for Arduino {
 
     /// The sketch's own .ino files, which a once file must never be.
     fn managed_files(&self, _project_root: &Path, _library: &Manifest) -> Vec<String> {
-        vec![crate::record::RECORD_NAME.to_string(), "*.ino".to_string()]
+        super::managed_patterns(Platform::Arduino)
+            .into_iter()
+            .map(String::from)
+            .collect()
     }
 
     /// In a sketch, the header by its path from the sketch, which is how a sketch finds it.

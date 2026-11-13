@@ -160,10 +160,13 @@ pub fn outside(text: &str, marker: &Marker) -> String {
 }
 
 /// The text with a block taken out, with the line it stood on and the one blank line
-/// that came with it: below it, or above it when it ends the file.
+/// that came with it: below it, or above it when it ends the file. A block with nothing
+/// after it, not even a line ending, was put after a last line that had none, see
+/// appended(), and that line gets back the end it had.
 pub fn cut(text: &str, (start, end): (usize, usize), newline: &str) -> String {
     let mut start = line_start(text, start);
     let mut end = end;
+    let ended = end == text.len();
 
     if text[end..].starts_with(newline) {
         end += newline.len();
@@ -173,9 +176,28 @@ pub fn cut(text: &str, (start, end): (usize, usize), newline: &str) -> String {
         end += newline.len();
     } else if end == text.len() && text[..start].ends_with(&format!("{newline}{newline}")) {
         start -= newline.len();
+
+        if ended {
+            start -= newline.len();
+        }
     }
 
     format!("{}{}", &text[..start], &text[end..])
+}
+
+/// text with a block at its end, after a blank line, or the block alone in a text of
+/// nothing. A text whose last line has no line ending keeps having none: the block ends it
+/// as that line did, so taking the block out gives the text back to the byte.
+pub fn appended(text: &str, block: &str, newline: &str) -> String {
+    let head = text.trim_end_matches(['\r', '\n']);
+
+    if head.is_empty() {
+        format!("{block}{newline}")
+    } else if text.ends_with('\n') {
+        format!("{head}{newline}{newline}{block}{newline}")
+    } else {
+        format!("{text}{newline}{newline}{block}")
+    }
 }
 
 /// Whether the user changed what is inside a block since it was written, by the
@@ -238,46 +260,72 @@ pub fn labels(text: &str, library: &str) -> Vec<String> {
     found
 }
 
-/// Where in a text a block goes: the start of the line it goes above, when there is one.
+/// The line of a text that blocks go above or below, such as find_package(Zephyr): where it
+/// starts, when the text has it.
 pub type Anchor<'a> = &'a dyn Fn(&str) -> Option<usize>;
 
-/// text with a block of content in its place: taken out from wherever it is, and put
-/// back above the line `anchor(text)` gives the start of, with a blank line after it,
-/// or, with no anchor or none found, at the end of the file after a blank line. Done
-/// that way, a block already in its place comes back exactly as it was.
+/// Which side of its anchor's line a block belongs on.
+#[derive(Clone, Copy)]
+pub enum Place<'a> {
+    /// Above it, as a list find_package(Zephyr) reads: the first time right above it.
+    Above(Anchor<'a>),
+    /// Below it, as a line that needs a target the line makes: the first time at the end.
+    Below(Anchor<'a>),
+}
+
+impl Place<'_> {
+    /// Whether a block standing at span in text is on its side of the line. Anywhere is, in
+    /// a text without the line.
+    fn holds(&self, text: &str, (start, end): (usize, usize)) -> bool {
+        match self {
+            Place::Above(anchor) => anchor(text).is_none_or(|line| end <= line),
+            Place::Below(anchor) => anchor(text).is_none_or(|line| start > line),
+        }
+    }
+}
+
+/// text with a block of content in its place. A block on its side of the line is written
+/// again where it stands, so the blocks of several libraries keep the order they were first
+/// written in, or the one the user gave them, and a second install changes nothing. Anywhere
+/// else, or not there yet, it goes where it goes the first time: right above the line, with a
+/// blank line after it, or at the end of the file after a blank line, when it belongs below
+/// the line or the text has none.
 pub fn place(
     text: &str,
     marker: &Marker,
     content: &[String],
     newline: &str,
-    anchor: Option<Anchor<'_>>,
+    at: Place<'_>,
 ) -> Result<String, HalfWritten> {
     let found = span(text, marker)?;
-    let rest = match found {
-        Some(found) => cut(text, found, newline),
-        None => text.to_string(),
-    };
 
     let mut rows = vec![marker.open.clone()];
     rows.extend_from_slice(content);
     rows.push(marker.close.clone());
     let block = rows.join(newline);
 
-    if let Some(at) = anchor.and_then(|anchor| anchor(&rest)) {
+    if let Some((start, end)) = found
+        && at.holds(text, (start, end))
+    {
+        return Ok(format!("{}{block}{}", &text[..start], &text[end..]));
+    }
+
+    let rest = match found {
+        Some(found) => cut(text, found, newline),
+        None => text.to_string(),
+    };
+
+    if let Place::Above(anchor) = at
+        && let Some(line) = anchor(&rest)
+    {
         return Ok(format!(
             "{}{block}{newline}{newline}{}",
-            &rest[..at],
-            &rest[at..]
+            &rest[..line],
+            &rest[line..]
         ));
     }
 
-    let head = rest.trim_end_matches(['\r', '\n']);
-
-    Ok(if head.is_empty() {
-        format!("{block}{newline}")
-    } else {
-        format!("{head}{newline}{newline}{block}{newline}")
-    })
+    Ok(appended(&rest, &block, newline))
 }
 
 /// Lines a library adds to a file of the project's, with a label and a place, such as a
@@ -295,6 +343,21 @@ mod tests {
 
     fn marker() -> Marker {
         Marker::new("gcore", None)
+    }
+
+    /// The line blocks go above or below here.
+    fn zephyr(text: &str) -> Option<usize> {
+        text.find("find_package")
+    }
+
+    /// No such line: a block goes anywhere, the first time at the end.
+    fn nowhere(_: &str) -> Option<usize> {
+        None
+    }
+
+    /// A block of this marker holding this one line.
+    fn block_of(marker: &Marker, line: &str) -> String {
+        format!("{}\n{line}\n{}", marker.open, marker.close)
     }
 
     #[test]
@@ -362,10 +425,21 @@ mod tests {
 
     #[test]
     fn cut_takes_the_blank_line_above_it_when_it_ends_the_file() {
-        let text = "a\n\n# >>> libnima: gcore >>>\n# <<< libnima: gcore <<<";
+        let text = "a\n\n# >>> libnima: gcore >>>\n# <<< libnima: gcore <<<\n";
         let found = span(text, &marker()).unwrap().unwrap();
 
         assert_eq!(cut(text, found, "\n"), "a\n");
+    }
+
+    #[test]
+    fn a_last_line_with_no_line_ending_gets_one_back_by_nothing() {
+        for (text, newline) in [("a", "\n"), ("a\r\nb", "\r\n"), ("a\n", "\n"), ("", "\n")] {
+            let block = format!("{}{newline}x(){newline}{}", marker().open, marker().close);
+            let added = appended(text, &block, newline);
+            let found = span(&added, &marker()).unwrap().unwrap();
+
+            assert_eq!(cut(&added, found, newline), text, "{text:?}");
+        }
     }
 
     #[test]
@@ -381,25 +455,27 @@ mod tests {
     #[test]
     fn place_is_the_same_the_second_time() {
         let lines = vec!["b".to_string()];
-        let first = place("a\n", &marker(), &lines, "\n", None).unwrap();
+        let first = place("a\n", &marker(), &lines, "\n", Place::Below(&nowhere)).unwrap();
 
         assert_eq!(
             first,
             "a\n\n# >>> libnima: gcore >>>\nb\n# <<< libnima: gcore <<<\n"
         );
-        assert_eq!(place(&first, &marker(), &lines, "\n", None).unwrap(), first);
+        assert_eq!(
+            place(&first, &marker(), &lines, "\n", Place::Below(&nowhere)).unwrap(),
+            first
+        );
     }
 
     #[test]
     fn place_goes_above_its_anchor_and_stays() {
-        let anchor: &dyn Fn(&str) -> Option<usize> = &|text: &str| text.find("find_package");
         let lines = vec!["b".to_string()];
         let first = place(
             "top\nfind_package(Zephyr)\n",
             &marker(),
             &lines,
             "\n",
-            Some(anchor),
+            Place::Above(&zephyr),
         )
         .unwrap();
 
@@ -408,8 +484,102 @@ mod tests {
             "top\n# >>> libnima: gcore >>>\nb\n# <<< libnima: gcore <<<\n\nfind_package(Zephyr)\n"
         );
         assert_eq!(
-            place(&first, &marker(), &lines, "\n", Some(anchor)).unwrap(),
+            place(&first, &marker(), &lines, "\n", Place::Above(&zephyr)).unwrap(),
             first
+        );
+    }
+
+    #[test]
+    fn a_block_above_its_line_stays_where_it_is_among_others() {
+        // Put back right above the line, it went below every block placed after it, another
+        // library's too, so the order followed the last install.
+        let other = Marker::new("other", None);
+        let text = format!(
+            "{}\n\n{}\n\nfind_package(Zephyr)\n",
+            block_of(&marker(), "a()"),
+            block_of(&other, "b()")
+        );
+        let lines = ["a()".to_string()];
+
+        assert_eq!(
+            place(&text, &marker(), &lines, "\n", Place::Above(&zephyr)).unwrap(),
+            text
+        );
+        assert_eq!(
+            place(
+                &text,
+                &marker(),
+                &["c()".to_string()],
+                "\n",
+                Place::Above(&zephyr)
+            )
+            .unwrap(),
+            text.replace("a()", "c()")
+        );
+    }
+
+    #[test]
+    fn a_block_below_its_line_stays_where_it_is_among_others() {
+        let other = Marker::new("other", None);
+        let text = format!(
+            "find_package(Zephyr)\n\n{}\n\n{}\nmine()\n",
+            block_of(&marker(), "a()"),
+            block_of(&other, "b()")
+        );
+
+        assert_eq!(
+            place(
+                &text,
+                &marker(),
+                &["a()".to_string()],
+                "\n",
+                Place::Below(&zephyr)
+            )
+            .unwrap(),
+            text
+        );
+    }
+
+    #[test]
+    fn a_block_above_its_line_that_belongs_below_goes_to_the_end() {
+        let text = format!(
+            "{}\n\nfind_package(Zephyr)\nx()\n",
+            block_of(&marker(), "a()")
+        );
+
+        assert_eq!(
+            place(
+                &text,
+                &marker(),
+                &["a()".to_string()],
+                "\n",
+                Place::Below(&zephyr)
+            )
+            .unwrap(),
+            format!(
+                "find_package(Zephyr)\nx()\n\n{}\n",
+                block_of(&marker(), "a()")
+            )
+        );
+    }
+
+    #[test]
+    fn a_crlf_block_in_its_place_stays_crlf() {
+        let text = format!(
+            "{}\r\n\r\nfind_package(Zephyr)\r\n",
+            block_of(&marker(), "a()").replace('\n', "\r\n")
+        );
+
+        assert_eq!(
+            place(
+                &text,
+                &marker(),
+                &["a()".to_string()],
+                "\r\n",
+                Place::Above(&zephyr)
+            )
+            .unwrap(),
+            text
         );
     }
 
@@ -461,22 +631,25 @@ mod tests {
         let block = "# >>> libnima: gcore >>>\na()\n# <<< libnima: gcore <<<\n";
 
         assert_eq!(
-            place("x()\n", &marker(), &lines, "\n", None).unwrap(),
+            place("x()\n", &marker(), &lines, "\n", Place::Below(&nowhere)).unwrap(),
             format!("x()\n\n{block}")
         );
-        assert_eq!(place("", &marker(), &lines, "\n", None).unwrap(), block);
+        assert_eq!(
+            place("", &marker(), &lines, "\n", Place::Below(&nowhere)).unwrap(),
+            block
+        );
     }
 
     #[test]
     fn two_blocks_in_one_place_keep_their_order() {
-        let anchor: &dyn Fn(&str) -> Option<usize> = &|text: &str| text.find("find_package");
+        let anchor = Place::Above(&zephyr);
         let first = Marker::new("gcore", Some("a"));
         let second = Marker::new("gcore", Some("b"));
         let mut text = "find_package(Zephyr)\n".to_string();
 
         for _ in 0..2 {
-            text = place(&text, &first, &["a()".to_string()], "\n", Some(anchor)).unwrap();
-            text = place(&text, &second, &["b()".to_string()], "\n", Some(anchor)).unwrap();
+            text = place(&text, &first, &["a()".to_string()], "\n", anchor).unwrap();
+            text = place(&text, &second, &["b()".to_string()], "\n", anchor).unwrap();
         }
 
         let at = |wanted: &str| text.find(wanted).unwrap();
@@ -487,10 +660,16 @@ mod tests {
 
     #[test]
     fn a_block_found_away_from_its_anchor_is_moved() {
-        let anchor: &dyn Fn(&str) -> Option<usize> = &|text: &str| text.find("find_package");
         let text =
             "find_package(Zephyr)\n\n# >>> libnima: gcore >>>\na()\n# <<< libnima: gcore <<<\n";
-        let moved = place(text, &marker(), &["a()".to_string()], "\n", Some(anchor)).unwrap();
+        let moved = place(
+            text,
+            &marker(),
+            &["a()".to_string()],
+            "\n",
+            Place::Above(&zephyr),
+        )
+        .unwrap();
 
         assert!(
             moved.find(&marker().open) < moved.find("find_package"),
@@ -502,12 +681,22 @@ mod tests {
     fn a_half_written_block_is_not_placed() {
         let text = format!("{}\n", marker().open);
 
-        assert_eq!(place(&text, &marker(), &[], "\n", None), Err(HalfWritten));
+        assert_eq!(
+            place(&text, &marker(), &[], "\n", Place::Below(&nowhere)),
+            Err(HalfWritten)
+        );
     }
 
     #[test]
     fn crlf_is_kept_when_placing() {
-        let placed = place("x()\r\n", &marker(), &["a()".to_string()], "\r\n", None).unwrap();
+        let placed = place(
+            "x()\r\n",
+            &marker(),
+            &["a()".to_string()],
+            "\r\n",
+            Place::Below(&nowhere),
+        )
+        .unwrap();
 
         assert!(!placed.replace("\r\n", "").contains('\n'), "{placed:?}");
     }

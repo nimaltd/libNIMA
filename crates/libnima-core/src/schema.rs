@@ -403,14 +403,16 @@ pub static KEYS: &[Key] = &[
         path: "requires.libraries",
         shape: Shape::Lines,
         label: "Libraries",
-        help: "Other libraries, installed first when missing: osal >= 1.0.0, owner/lib or owner/lib@v1.2.0.",
+        help: "Other libraries, installed first when missing: osal >= 1.0.0, owner/lib or owner/lib@v1.2.0. A library from \
+               that repository counts, whatever its name. A ref is only where a missing one is fetched from, and sets no \
+               minimum: owner/lib@v1.2.0 >= 1.2.0 does.",
         example: "- osal >= 1.0.0",
         ..BLANK
     },
     Key {
         path: "requires.libraries[].source",
         label: "Source",
-        help: "A repository with no libnima.yml of its own, as owner/name.",
+        help: "Where it comes from, owner/name or owner/name@ref.",
         example: "owner/other@v2.9.3",
         ..BLANK
     },
@@ -574,7 +576,7 @@ pub static KEYS: &[Key] = &[
         path: "options.*.zephyr",
         shape: Shape::Section,
         label: "Zephyr",
-        help: "This part's CMake lines in a Zephyr project.",
+        help: "This part's CMake lines, and its #include lines in the overlay, in a Zephyr project.",
         example: "library:\n  cmake:\n    - zephyr_library_link_libraries(mbedTLS)",
         ..BLANK
     },
@@ -582,7 +584,7 @@ pub static KEYS: &[Key] = &[
         path: "options.*.zephyr.project",
         shape: Shape::Section,
         label: "The application's files",
-        help: "Lines for the application's CMakeLists.txt.",
+        help: "Lines for the application's CMakeLists.txt and its overlay.",
         example: "cmake:\n  after-zephyr:\n    - target_sources(app PRIVATE src/extra.c)",
         ..BLANK
     },
@@ -608,6 +610,28 @@ pub static KEYS: &[Key] = &[
         label: "Before find_package(Zephyr)",
         help: "Lines for before Zephyr is found.",
         example: "- set(EXAMPLE_ON 1)",
+        ..BLANK
+    },
+    Key {
+        path: "options.*.zephyr.project.overlay",
+        shape: Shape::Lines,
+        label: "Devicetree overlay",
+        help: "Files this part's #include lines in the application's overlay name, written while it is taken.",
+        example: "- boards/example_lfs.dtsi",
+        ..BLANK
+    },
+    Key {
+        path: "options.*.zephyr.project.overlay[].from",
+        label: "File",
+        help: "The file to include, from the application's folder, or {library}/... in the library's.",
+        example: "boards/example_lfs.dtsi",
+        ..BLANK
+    },
+    Key {
+        path: "options.*.zephyr.project.overlay[].to",
+        label: "Overlay",
+        help: "The overlay it goes into, or every one a wildcard matches.",
+        example: "boards/example.overlay",
         ..BLANK
     },
     Key {
@@ -912,6 +936,31 @@ pub static KEYS: &[Key] = &[
         label: "After find_package(Zephyr)",
         help: "Lines for after Zephyr is found.",
         example: "- target_sources(app PRIVATE src/extra.c)",
+        ..BLANK
+    },
+    Key {
+        path: "zephyr.project.overlay",
+        shape: Shape::Lines,
+        label: "Devicetree overlay",
+        help: "Files the application's overlay includes, in a block of #include lines: each a path, into the overlay found \
+               and asked when there are several, or a from and a to.",
+        example: "- boards/example.dtsi",
+        ..BLANK
+    },
+    Key {
+        path: "zephyr.project.overlay[].from",
+        label: "File",
+        help: "The file to include: from the application's folder, where a once file puts it, or {library}/... in the \
+               library's.",
+        example: "boards/example.dtsi",
+        ..BLANK
+    },
+    Key {
+        path: "zephyr.project.overlay[].to",
+        label: "Overlay",
+        help: "The overlay it goes into, such as boards/example.overlay, or every one a wildcard matches, such as \
+               boards/*.overlay.",
+        example: "boards/example.overlay",
         ..BLANK
     },
     Key {
@@ -1653,10 +1702,41 @@ pub fn json_schema() -> Value {
     root["description"] =
         json!("What a library is and what goes where when it is installed. See docs/FORMAT.md.");
     root["required"] = json!(["name", "platform"]);
+    // Headers, or sources, or both: a library of neither has nothing to install.
+    root["anyOf"] = json!([{ "required": ["headers"] }, { "required": ["sources"] }]);
     // A key it does not know at the top is only a warning, so a newer file still reads.
     root["additionalProperties"] = json!(true);
 
     root
+}
+
+/// A line with a note, as `- LOG=n: no messages`: one key, its value the note.
+fn note_schema() -> Value {
+    json!({
+        "type": "object",
+        "minProperties": 1,
+        "maxProperties": 1,
+        "additionalProperties": { "type": ["string", "number", "boolean", "null"] },
+    })
+}
+
+/// What another library is needed as, the same under requires and under an option: a line, such as osal >= 1.0.0, or a
+/// mapping of the keys a requirement can have, a source among them. A note is no form of it, as the reader refuses one.
+fn requirement_schema() -> Value {
+    json!({
+        "type": "array",
+        "items": {
+            "oneOf": [
+                { "type": "string" },
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["source"],
+                    "properties": schema_below("requires.libraries[]")["properties"].clone(),
+                },
+            ],
+        },
+    })
 }
 
 /// An object with the keys below a path.
@@ -1676,13 +1756,14 @@ fn schema_below(path: &str) -> Value {
     })
 }
 
-/// A list of text, which can come under titles, each line of it with a note.
+/// A list of text, which can come under titles, each line of it with a note. Any of the forms will do for a line, as a
+/// mapping of a row's keys can also read as a note.
 fn lines_schema(item: Value) -> Value {
     json!({
         "oneOf": [
             {
                 "type": "array",
-                "items": { "oneOf": [item, { "type": "object" }] },
+                "items": { "anyOf": [item, note_schema()] },
             },
             { "type": "object" },
         ],
@@ -1700,6 +1781,18 @@ fn choice_schema(key: &Key) -> Value {
 fn schema_of(key: &Key) -> Value {
     let row = format!("{}[]", key.path);
     let mut found = match key.shape {
+        // The switch, or the switch with a note: symbol: {EXAMPLE: the driver}.
+        Shape::Text if key.path.ends_with("zephyr.symbol") => json!({
+            "oneOf": [{ "type": ["string", "number", "boolean"] }, note_schema()],
+        }),
+        Shape::Lines if key.path == "requires.libraries" || key.path == "options.*.libraries" => {
+            requirement_schema()
+        }
+        // An option's files are written as the library's own are.
+        Shape::Files if children(&row).is_empty() => json!({
+            "type": "array",
+            "items": { "oneOf": [{ "type": "string" }, schema_below("headers[]")] },
+        }),
         Shape::Text => json!({ "type": ["string", "number", "boolean"] }),
         Shape::Value => json!({ "type": ["string", "number", "boolean"] }),
         Shape::Flag => json!({ "type": "boolean" }),
@@ -1806,6 +1899,14 @@ mod tests {
             std::fs::write(path, "").unwrap();
         }
 
+        // The first header says the version, the one the table's version: gives, so neither its missing nor a second
+        // one is said.
+        std::fs::write(
+            root.path().join("src/example.h"),
+            "/**\n * @version 1.0.0\n */\n",
+        )
+        .unwrap();
+
         root
     }
 
@@ -1822,6 +1923,9 @@ mod tests {
             "sources" => &["from: src/port/spi.c"],
             "once" => &["from: templates/example_port.c"],
             "extras" => &["from: docs/guide.md", "to: guide.md"],
+            "zephyr.project.overlay" | "options.*.zephyr.project.overlay" => {
+                &["from: boards/example.dtsi", "to: boards/example.overlay"]
+            }
             _ => &[],
         }
     }

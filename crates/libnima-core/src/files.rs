@@ -5,17 +5,65 @@
 //! no longer opens, or a source with their own code in it. So a copy is taken first,
 //! beside the file, under a name that never replaces an older copy.
 
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
 use chrono::Local;
 
+thread_local! {
+    /// The copies the run going on has made, by the file each is of, while a run goes on.
+    static RUN: RefCell<Option<HashMap<PathBuf, PathBuf>>> = const { RefCell::new(None) };
+}
+
+/// While the guard this returns lives, every copy made is of the file as it was before the run: one a file, however
+/// often the run writes it, moving a project over from lib-installer included, and the one the run names.
+pub fn run_copies() -> RunCopies {
+    RUN.with(|run| *run.borrow_mut() = Some(HashMap::new()));
+
+    RunCopies
+}
+
+/// Ends the run's copies when it goes.
+pub struct RunCopies;
+
+impl Drop for RunCopies {
+    fn drop(&mut self) {
+        RUN.with(|run| *run.borrow_mut() = None);
+    }
+}
+
 /// Copy a file aside before editing it.
 ///
 /// Named with a timestamp rather than a plain .bak, so a second install does not
-/// overwrite the copy taken before the first one.
+/// overwrite the copy taken before the first one. In a run, a file already copied is
+/// not copied again: the first copy holds it as it was, and is the one returned.
 pub fn backup(path: &Path) -> io::Result<PathBuf> {
+    let key = crate::paths::resolve(path);
+    let earlier = RUN.with(|run| {
+        run.borrow()
+            .as_ref()
+            .and_then(|copies| copies.get(&key).cloned())
+    });
+
+    if let Some(copy) = earlier.filter(|copy| copy.is_file()) {
+        return Ok(copy);
+    }
+
+    let copy = new_copy(path)?;
+
+    RUN.with(|run| {
+        if let Some(copies) = run.borrow_mut().as_mut() {
+            copies.insert(key, copy.clone());
+        }
+    });
+
+    Ok(copy)
+}
+
+fn new_copy(path: &Path) -> io::Result<PathBuf> {
     let stamp = Local::now().format("%Y%m%d-%H%M%S");
     let name = path
         .file_name()

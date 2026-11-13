@@ -272,9 +272,11 @@ fn each_file_is_saved_as_it_was_and_the_record_names_the_platform() {
 
     assert_eq!(from, "zephyr-installer");
     assert_eq!(
-        moved.iter().map(|path| same(path)).collect::<Vec<_>>(),
+        moved.iter().map(|(path, _)| same(path)).collect::<Vec<_>>(),
         ["CMakeLists.txt", "prj.conf", ".libnima.json"].map(|name| same(&project.join(name)))
     );
+    // Each with the copy that holds it as it was.
+    assert!(moved.iter().all(|(_, copy)| copy.is_file()));
     assert_eq!(record_file(&project)["platform"], "zephyr");
 
     for (name, held) in names.iter().zip(&before) {

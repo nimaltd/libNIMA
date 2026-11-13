@@ -828,7 +828,13 @@ fn a_new_file_starts_as_one_that_reads() {
     for platform in Platform::ALL {
         let folder = root.path().join(platform.name()).join("demo");
 
-        put(&folder, &[("src/demo.h", ""), ("src/demo.c", "")]);
+        put(
+            &folder,
+            &[
+                ("src/demo.h", "/**\n * @version 0.1.0\n */\n"),
+                ("src/demo.c", ""),
+            ],
+        );
 
         let found = libnima_core::scaffold::scan(&folder, Some(platform));
         let text = libnima_core::scaffold::first_file(&found, libnima_core::VERSION);

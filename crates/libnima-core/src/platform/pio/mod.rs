@@ -322,10 +322,10 @@ impl Target for PlatformIO {
 
     /// platformio.ini, which this edits, and which a once file must never be.
     fn managed_files(&self, _project_root: &Path, _library: &Manifest) -> Vec<String> {
-        vec![
-            crate::record::RECORD_NAME.to_string(),
-            ini::NAME.to_string(),
-        ]
+        super::managed_patterns(Platform::Pio)
+            .into_iter()
+            .map(String::from)
+            .collect()
     }
 
     /// What the project is missing for this library. Never stops an install.

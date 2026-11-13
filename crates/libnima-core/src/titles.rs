@@ -93,6 +93,19 @@ pub fn listed<T>(
     value: Option<&Node>,
     key: &str,
     notes: bool,
+    make: impl FnMut(&Node) -> Result<Option<T>, ManifestError>,
+) -> Result<Vec<Listed<T>>, ManifestError> {
+    listed_or_whole(value, key, notes, |_| false, make)
+}
+
+/// As `listed`, for a list one of whose entries can also be a mapping of its own, as a file with a from and a to is:
+/// `whole` says which mappings are such an entry, and `make` is given them as they are. Any other mapping of one is an
+/// entry with its note, as in `listed`.
+pub fn listed_or_whole<T>(
+    value: Option<&Node>,
+    key: &str,
+    notes: bool,
+    whole: impl Fn(&Mapping) -> bool,
     mut make: impl FnMut(&Node) -> Result<Option<T>, ManifestError>,
 ) -> Result<Vec<Listed<T>>, ManifestError> {
     let Some(value) = value.filter(|value| !value.is_null()) else {
@@ -142,7 +155,9 @@ pub fn listed<T>(
             let mut note = None;
             let mut given = entry.clone();
 
-            if let Value::Map(map) = &entry.value {
+            if let Value::Map(map) = &entry.value
+                && !whole(map)
+            {
                 if !notes {
                     return Err(ManifestError::at(
                         entry.line,
@@ -349,13 +364,15 @@ pub fn cmake_groups(
 }
 
 /// An option's own groups of CMake lines, written while it is taken: under
-/// project.cmake and library.cmake of its part for the platform, `section`.
+/// project.cmake and library.cmake of its part for the platform, `section`. Its project
+/// part holds `project_keys`, cmake and what else the platform reads of an option there.
 pub fn option_cmake(
     option_name: &str,
     given: Option<&Node>,
     section: &str,
     places: &[&str],
     own: &str,
+    project_keys: &[&str],
 ) -> Result<Vec<Group>, ManifestError> {
     let key = format!("options.{option_name}.{section}");
 
@@ -374,7 +391,7 @@ pub fn option_cmake(
     let project = part(
         given.and_then(|map| map.get("project")),
         &format!("{key}.project"),
-        &["cmake"],
+        project_keys,
     )?;
     let library = part(
         given.and_then(|map| map.get("library")),
@@ -532,6 +549,7 @@ mod tests {
             "zephyr",
             &["module", "before-zephyr", "after-zephyr"],
             "module",
+            &["cmake"],
         )
         .unwrap();
 

@@ -5,6 +5,7 @@
 
 pub mod blocks;
 pub mod check;
+pub mod choose;
 pub mod convert;
 pub mod detect;
 pub mod download;

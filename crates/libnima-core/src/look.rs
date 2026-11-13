@@ -62,6 +62,8 @@ pub struct Project {
     pub ides: Vec<String>,
     /// Zephyr's Kconfig files, for choosing one.
     pub conf_files: Vec<String>,
+    /// Zephyr's overlays, for choosing the one that includes the libraries' devicetree.
+    pub overlay_files: Vec<String>,
     /// Whether it is an Arduino sketch, which can hold libraries of its own.
     pub sketch: bool,
     pub installed: Vec<InstalledLibrary>,
@@ -189,6 +191,11 @@ pub fn project(folder: &Path, sketchbook_given: Option<&str>) -> Project {
     Project {
         conf_files: if platform == Some(Platform::Zephyr) {
             crate::platform::zephyr::app::conf_files(&folder)
+        } else {
+            Vec::new()
+        },
+        overlay_files: if platform == Some(Platform::Zephyr) {
+            crate::platform::zephyr::overlay::offered(&folder)
         } else {
             Vec::new()
         },

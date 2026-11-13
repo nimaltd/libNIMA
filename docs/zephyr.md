@@ -29,6 +29,7 @@ Take `example`, installed into an application called `app`:
 app/
   CMakeLists.txt         one block added, above find_package(Zephyr)
   prj.conf               one block added, CONFIG_EXAMPLE=y and what it needs
+  boards/x.overlay       one block of #include lines, when its libnima.yml has zephyr.project.overlay
   modules/example/
     src/example.h        the library's files, at the paths they have in its repository
     src/example.c
@@ -109,6 +110,15 @@ list(APPEND EXTRA_CONF_FILE "${CMAKE_CURRENT_SOURCE_DIR}/modules/example/zephyr/
 # <<< libnima: example/zephyr.conf <<<
 ```
 
+- **Its devicetree**, such as a `.dtsi` with its nodes that a `once` file put in your `boards/`, is included by your overlay, in a block of its own marked with `//`, since a line of a devicetree file that starts with `#` is the preprocessor's. Which overlay is under [Which overlay](#which-overlay):
+
+```c
+// >>> libnima: example >>>
+// From example's libnima.yml, and written again on every install.
+#include "example.dtsi"
+// <<< libnima: example <<<
+```
+
 A library that lists its lines in groups has each group's title written above it, between two lines of stars, and a note it gives a line above that line, so each file says why its lines are there:
 
 ```
@@ -147,7 +157,29 @@ Kconfig file for the libraries [prj.conf]:
 
 Press Enter for `prj.conf`. `--conf boards/nrf52840dk_nrf52840.conf` answers it on the command line, and a file that does not exist yet is created. One answer covers every library of that run, a library it needs included. On an update, a library stays in the file that already has its block, without a question. In a script, where nobody can answer, `prj.conf` is taken.
 
-`sysbuild.conf` is never one of the choices. It holds sysbuild's settings, not the application's, so libNIMA neither asks about it nor reads it as one, and `--conf sysbuild.conf` is refused.
+`sysbuild.conf` is never one of the choices, nor a `sysbuild_<suffix>.conf` of a build with a file suffix, nor anything under `sysbuild/`. They hold sysbuild's settings, not the application's, so libNIMA neither asks about them nor reads them as one, and `--conf` refuses them. `--conf` takes a `.conf` file of the application only, inside its folder however it is written, and never one of the library's own `once` files, which the question does not offer either.
+
+### Which overlay
+
+A library whose `libnima.yml` has `zephyr.project.overlay` adds `#include` lines to your overlay. One that names the overlay goes there without a question: the one it names in full, such as `boards/nrf54l15dk_nrf54l15_cpuapp.overlay`, or every one its wildcard matches, such as `boards/*.overlay`. For a file it gives alone, libNIMA looks for your overlays, those beside `CMakeLists.txt`, in `boards/` and in `socs/`:
+
+- one: that one, without a question
+- none: `app.overlay`, made with the block in it, which Zephyr reads for a board with no overlay of its own
+- several: it asks, once for every library of that run:
+
+```
+This application has more than one overlay:
+   1  boards/nrf52840dk_nrf52840.overlay
+   2  boards/nrf54l15dk_nrf54l15_cpuapp.overlay
+A number, several as 1,3, a name, a part of one, a wildcard, or * for all. Nothing takes none.
+Overlay for the libraries' devicetree:
+```
+
+The window offers the same list, with a search above it and a box to tick for each. Nothing ticked or typed, or nobody there to answer, as in a script, takes none: libNIMA never guesses, and says which lines to add, and where they are from.
+
+`--overlay boards/x.overlay`, or `--overlay 'boards/*.overlay'`, answers it on the command line, in place of what every library of that run names, and the window's **This project** dialog has it too. An overlay it names in full is made when it is not there yet, as the Kconfig file of `--conf` is. An overlay a library names in full is never made: a board's overlay that an install made would stop Zephyr reading `app.overlay` for that board, so the run says it is not there instead.
+
+On an update, a library's lines stay in the overlays that already have them, without a question. Those of `sysbuild/`, which belong to the other images, such as MCUboot's, are never offered and never matched by a wildcard that does not start with `sysbuild/`; a library can still name one in full.
 
 ### Files that become yours
 
@@ -212,7 +244,7 @@ The record of what is installed, and where, is `.libnima.json` in your applicati
 libnima --uninstall example
 ```
 
-From your application's folder, or with `--project`. Its blocks go from `CMakeLists.txt`, from the Kconfig file that has its block and from `sysbuild.conf`, the module files and the Kconfig fragment libNIMA wrote go from its folder, and then the library's own files. Installed and then uninstalled, `CMakeLists.txt` and `prj.conf` are back to the byte they were. `sysbuild.conf` stays, even when the block was all it held, and so do the [files that became yours](#files-that-become-yours).
+From your application's folder, or with `--project`. Its blocks go from `CMakeLists.txt`, from the Kconfig file that has its block, from `sysbuild.conf` and from every overlay that has one, the module files and the Kconfig fragment libNIMA wrote go from its folder, and then the library's own files. Installed and then uninstalled, `CMakeLists.txt` and `prj.conf` are back to the byte they were. `sysbuild.conf` stays, even when the block was all it held, and so do the [files that became yours](#files-that-become-yours).
 
 What was yours is saved before it goes, as a `.bak` beside it: any file of the library you wrote in between its `USER CODE` lines or changed by hand, its extras and tools among them. A file you put in the library's folder yourself is left where it is, and the folder with it.
 
@@ -227,7 +259,7 @@ A library another one needs stays, and libNIMA says which needs it. Name them al
 
 ### A library that needs another
 
-You install only the one you want, and what it needs goes in first, each as a module of its own with its own blocks. It comes from the release the library names for it, or else from its default branch. One already in the application at a version that will do is left alone. Everything is fetched before anything is installed, so when a library cannot be had, your application is left as it was.
+You install only the one you want, and what it needs goes in first, each as a module of its own with its own blocks. It comes from the release the library names for it, or else from its default branch. One already in the application at a version that will do is left alone, and so is one from the same repository, whatever it is called. Everything is fetched before anything is installed, so when a library cannot be had, your application is left as it was. A library another one needs stays, and libNIMA says which needs it; libraries that need each other go out together when you name them all. `--check` works all of this out as the install does, and says NO where the install would be refused.
 
 ## For someone writing a library
 
@@ -345,6 +377,8 @@ Requirements
 
 The fragment and its block are written again on every install. An update whose `libnima.yml` no longer has `zephyr.library.conf` takes both out, and so does an uninstall, which gives `CMakeLists.txt` back as it was. A library with its own `zephyr/module.yml` gets the fragment too.
 
+The fragments of several libraries are read in the order their blocks stand in `CMakeLists.txt`, the first installed first, so of two that set the same symbol the later one wins. A block above `find_package(Zephyr)` stays where it is: an update writes it again in its place, so the order holds whichever library is installed again, and a block you moved stays where you put it.
+
 A value is `y`, `n`, a number, `0x` and a hex number, or `"text"` with no quote or backslash in it. A symbol given twice, the library's own switch, a symbol also under `zephyr.project.conf` or `zephyr.library.kconfig`, which `zephyr.library.conf` would quietly undo, and a file of the library's own at the fragment's place are refused when the file is read. A symbol this Zephyr does not define stops the build, as it would in a `prj.conf`.
 
 | Key | Where the line goes | A line of the application's own that sets the symbol |
@@ -453,7 +487,7 @@ list(APPEND EXTRA_DTC_OVERLAY_FILE "${CMAKE_CURRENT_SOURCE_DIR}/modules/example/
 # <<< libnima: example/before-zephyr <<<
 ```
 
-Every install writes them again: a place whose lines changed is updated, and one the file no longer has is taken out. A line keeps the spaces it starts with, so the body of an `if()` can be indented. `{library}` in a line names the library's folder, as `${CMAKE_CURRENT_SOURCE_DIR}/modules/example` in the application's file and `${ZEPHYR_CURRENT_MODULE_DIR}` in the module's, wherever `--dir` put it; anything else in a line is CMake's own, written as it stands. A line holding a colon, as `message()` often does, goes in quotes, or YAML reads it as a mapping.
+Every install writes them again: a place whose lines changed is updated, and one the file no longer has is taken out. A block on its side of `find_package(Zephyr)` is written again where it stands, so the blocks of several libraries keep their order, and one you moved stays there; one on the wrong side is moved, above `find_package(Zephyr)` or to the end. A line keeps the spaces it starts with, so the body of an `if()` can be indented. `{library}` in a line names the library's folder, as `${CMAKE_CURRENT_SOURCE_DIR}/modules/example` in the application's file and `${ZEPHYR_CURRENT_MODULE_DIR}` in the module's, wherever `--dir` put it; anything else in a line is CMake's own, written as it stands. A line holding a colon, as `message()` often does, goes in quotes, or YAML reads it as a mapping.
 
 An option brings lines of its own under `options.<name>.zephyr.project.cmake` and `options.<name>.zephyr.library.cmake`, the same way, written while it is chosen and taken out by the update that turns it off. Its blocks are named after it and the place, `example/littlefs-module`, so they never meet the library's.
 
@@ -494,6 +528,58 @@ SB_CONFIG_BOOT_SIGNATURE_KEY_FILE="${APP_DIR}/sign_key.pem"
 ```
 
 Each is read like a line of `zephyr.project.conf`, written without `SB_CONFIG_`, which libNIMA adds, and can be in groups, each under its title, with a note. A value is written as given: sysbuild expands `${APP_DIR}` itself. The block follows the rules of the one in `prj.conf`: a symbol the user sets outside it is left commented out in it, an uninstall takes it out, and `sysbuild.conf` is made when the application has none.
+
+### The application's devicetree
+
+A library whose hardware is set up in the devicetree, its nodes and the pins and peripherals they use, brings them as a `.dtsi`, and the application's overlay includes it. The `.dtsi` is usually the application's own, made once from a template for the user to edit, and `zephyr.project.overlay` names it:
+
+```yaml
+platform: zephyr
+requires:
+  libnima: 1.3.0
+once:
+  - from: templates/gled.dtsi
+    to: boards/gled.dtsi
+zephyr:
+  project:
+    overlay:
+      - boards/gled.dtsi
+```
+
+libNIMA writes a block of `#include` lines at the end of the overlay, marked with `//`, since a line of a devicetree file that starts with `#` is the preprocessor's:
+
+```c
+/* The board's overlay, as it was. */
+
+// >>> libnima: gled >>>
+// From gled's libnima.yml, and written again on every install.
+#include "gled.dtsi"
+// <<< libnima: gled <<<
+```
+
+An entry is the file alone, or a `from` and a `to`:
+
+- The file alone goes into the overlay found, or those picked when there are several: see [Which overlay](#which-overlay). It is a path from the application's folder, where a `once` file or an extra with a `root` puts it, or `{library}/...`, a file of the library's own folder, which every install writes again.
+- A `from` and a `to` are the file, and the overlay it goes into, named in full, or every one a wildcard matches:
+
+```yaml
+zephyr:
+  project:
+    overlay:
+      - from: boards/gled.dtsi
+        to: boards/gtec_ble_nrf54l15_cpuapp.overlay
+      - from: '{library}/dts/gled_bindings.dtsi'
+        to: 'boards/*.overlay'
+```
+
+- Each line names its file from the overlay's own folder, where the preprocessor looks first: `"gled.dtsi"` from `boards/x.overlay`, `"boards/gled.dtsi"` from `app.overlay`, and `"../modules/gled/dts/gled_bindings.dtsi"` for a file of the library's.
+- The block goes at the end of the overlay the first time, and stays where it is after that: move it up when lines of the overlay's own refer to a label the file gives.
+- A file the overlay includes already, outside the block, is written into it commented out, with why, so the build never reads it twice, which devicetree refuses as a label given twice; the install says so. Take that line out, and the next install writes the block's. A file that is not in the application is written commented out too, and the install says so.
+- The list takes titles and notes, as every list here does, written as comments with `//`.
+- An option brings its own under `options.<name>.zephyr.project.overlay`, written while it is taken and taken out by the update that turns it off.
+- Every install writes the block again. An update without `zephyr.project.overlay` takes it out, and so does an uninstall. The overlay and the `.dtsi` stay, the application's own.
+- Refused when the file is read: a wildcard for the file, a path that leaves the application's folder or the library's, a `to` that is no overlay or names the library's folder, a `from` without a `to`, and an entry given twice. Said when it is read, and not refused: a file nothing in the file puts where it says.
+- `zephyr.project.overlay` is new in libNIMA 1.3.0. A library using it asks for `requires.libnima: 1.3.0`, so an older libNIMA says to update rather than stop on a key it does not know.
 
 ### Settings in the code
 

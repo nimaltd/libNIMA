@@ -130,6 +130,10 @@ pub enum QuestionKind {
     Text,
     /// Yes or no, or nothing for the one offered.
     YesNo { default: bool },
+    /// One of `options`, or several when `many`, as text: a number of the list, several as 1,3, a name, a part of one,
+    /// a wildcard, or * for all. A window offers the list itself, with a search and a box to tick for each, and answers
+    /// with the names ticked.
+    Choose { options: Vec<String>, many: bool },
 }
 
 /// Whoever is showing a run: the terminal, or the window.

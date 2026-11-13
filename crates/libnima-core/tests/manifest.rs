@@ -89,7 +89,7 @@ fn a_key_given_twice_is_refused_when_the_manifest_is_read() {
 
 #[test]
 fn an_unknown_kind_is_a_warning_in_a_run_and_something_to_check_in_a_look_over() {
-    let found = loaded(&format!("kind: nonsense\n{CODE}"), &[]);
+    let found = loaded(&format!("version: 1.0.0\nkind: nonsense\n{CODE}"), &[]);
 
     assert!(
         found.warnings[0].contains("nonsense"),
@@ -174,7 +174,7 @@ fn an_include_folder_a_project_file_could_not_hold_is_refused() {
         ("'src\" onload=\"x'", "it holds a quote, <, >, &, ;"),
         ("'src;inc'", "it holds a quote, <, >, &, ;"),
         ("'src<x>'", "it holds a quote, <, >, &, ;"),
-        ("../../outside", "it climbs out with .."),
+        ("../../outside", "it climbs out with '..'"),
         ("/etc", "it starts at the root of the drive"),
         ("C:/Windows", "it names a drive"),
         ("''", "it is empty"),
@@ -824,11 +824,13 @@ fn a_once_file_in_a_librarys_folder_is_refused_with_no_project() {
     // Anywhere else in the project is the project's own.
     fs::write(
         lib.join("libnima.yml"),
-        "name: libf\nplatform: zephyr\nheaders: [src/libf.h]\nonce:\n  - from: templates/x.h\n    to: modules/x.h\n",
+        "name: libf\nplatform: zephyr\nversion: 1.0.0\nheaders: [src/libf.h]\nonce:\n  - from: templates/x.h\n    to: modules/x.h\n",
     )
     .unwrap();
 
-    assert!(check::lint(&lib).unwrap().1.is_empty());
+    let (_, problems) = check::lint(&lib).unwrap();
+
+    assert!(problems.is_empty(), "{problems:?}");
 }
 
 #[test]

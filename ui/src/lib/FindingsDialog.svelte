@@ -7,7 +7,7 @@
   const looked = $derived(item.looked);
   const words = { ok: "Fine", warn: "To do", info: "Worth knowing" };
   /** The engine says the same to the command as to this window. */
-  const namesAnOption = $derived(/--(platform|ide|conf|into|sketchbook)\b/.test(looked?.why ?? ""));
+  const namesAnOption = $derived(/--(platform|ide|conf|overlay|into|sketchbook)\b/.test(looked?.why ?? ""));
 </script>
 
 <Modal title={looked?.name || item.given} {onclose} onsubmit={onclose}>

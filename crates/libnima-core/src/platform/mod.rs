@@ -115,6 +115,39 @@ impl Part {
 }
 
 /// Read a platform's own section onto a manifest, once the rest is read.
+/// The files of a project of the platform that libNIMA edits or reads as the project's own, by name or pattern, which a
+/// once file, or an extra with a root, may never be. What a target knows only in a project, such as a Zephyr application's
+/// Kconfig file when it is not prj.conf, it adds itself.
+pub fn managed_patterns(platform: Platform) -> Vec<&'static str> {
+    let mut found = vec![crate::record::RECORD_NAME];
+
+    found.extend_from_slice(match platform {
+        Platform::Stm32 => &[
+            "CMakeLists.txt",
+            ".cproject",
+            ".project",
+            "*.uvprojx",
+            "*.ewp",
+            "*.ewt",
+            "*.eww",
+            "Makefile",
+            "*.ioc",
+            "*_hal_conf.h",
+        ][..],
+        Platform::Zephyr => &["CMakeLists.txt", "prj.conf", "sysbuild.conf"],
+        Platform::Esp32 => &[
+            esp32::project::CMAKELISTS,
+            esp32::project::MAIN,
+            esp32::project::SDKCONFIG,
+            esp32::project::DEFAULTS,
+        ],
+        Platform::Arduino => &["*.ino"],
+        Platform::Pio => &[pio::ini::NAME],
+    });
+
+    found
+}
+
 pub fn read_part(
     platform: Platform,
     manifest: &mut Manifest,
@@ -161,6 +194,8 @@ pub struct PlatformArgs {
     pub ide: Option<String>,
     /// Zephyr: the Kconfig file that switches the libraries on.
     pub conf: Option<String>,
+    /// Zephyr: the overlay, or a wildcard of overlays, that includes the libraries' devicetree.
+    pub overlay: Option<String>,
     /// Arduino: "libraries" or "sketch".
     pub into: Option<String>,
     /// Arduino: the sketchbook folder.
@@ -173,7 +208,7 @@ pub struct PlatformArgs {
 pub fn target_of(platform: Platform, args: &PlatformArgs) -> Box<dyn Target> {
     match platform {
         Platform::Stm32 => Box::new(stm32::Stm32::new(args.ide.clone())),
-        Platform::Zephyr => Box::new(zephyr::Zephyr::new(args.conf.clone())),
+        Platform::Zephyr => Box::new(zephyr::Zephyr::new(args.conf.clone(), args.overlay.clone())),
         Platform::Esp32 => Box::new(esp32::Esp32),
         Platform::Arduino => Box::new(arduino::Arduino::new(
             args.into.clone(),

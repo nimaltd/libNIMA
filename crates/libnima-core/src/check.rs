@@ -65,12 +65,25 @@ pub struct Problem {
 /// `path` is what the problem is said to be in, and its text may be one being edited and not saved yet. What the editor
 /// and `libnima --lint` show.
 pub fn lint_text(root: &Path, path: &Path, text: &str) -> Vec<Problem> {
-    let in_file = format!("{}: ", path.display());
-    let plain = |message: &str| {
+    // The file and the line go in front of the message where an install says it, libnima.yml:10: ...; here the line is
+    // a part of its own.
+    let shown = paths::posix(path);
+    let plain = |message: &str| -> String {
         message
-            .strip_prefix(&in_file)
-            .unwrap_or(message)
-            .to_string()
+            .strip_prefix(&shown)
+            .map(|rest| {
+                let rest = rest.strip_prefix(':').unwrap_or(rest);
+                let digits =
+                    rest.len() - rest.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+                let rest = if digits > 0 {
+                    rest[digits..].strip_prefix(':').unwrap_or(&rest[digits..])
+                } else {
+                    rest
+                };
+
+                rest.trim_start().to_string()
+            })
+            .unwrap_or_else(|| message.to_string())
     };
     let mut problems: Vec<Problem> = Vec::new();
 
@@ -86,6 +99,16 @@ pub fn lint_text(root: &Path, path: &Path, text: &str) -> Vec<Problem> {
     };
 
     let data = node.as_map().expect("parse() gives a mapping");
+
+    // Before the platform, as an install reads it: a platform this libNIMA does not know may be a newer one's.
+    if let Err(error) = manifest::check_version(data) {
+        return vec![Problem {
+            line: error.line,
+            message: plain(&error.message),
+            warning: false,
+        }];
+    }
+
     let platforms = match manifest::platforms_of(data) {
         Ok(Some(platforms)) => platforms,
         Ok(None) => vec![],
@@ -116,7 +139,7 @@ pub fn lint_text(root: &Path, path: &Path, text: &str) -> Vec<Problem> {
             Ok(library) => {
                 for warning in library.warnings {
                     add(Problem {
-                        line: None,
+                        line: warning_line(data, &warning),
                         message: warning,
                         warning: true,
                     });
@@ -131,6 +154,43 @@ pub fn lint_text(root: &Path, path: &Path, text: &str) -> Vec<Problem> {
     }
 
     problems
+}
+
+/// The line a warning about a manifest is about, when one key of it is: a kind or a category that is none of the
+/// known, a key libNIMA does not read, version: against the tag, an option with no description.
+fn warning_line(data: &crate::yaml::Mapping, warning: &str) -> Option<usize> {
+    let quoted = |text: &str| text.split('\'').nth(1).map(str::to_string);
+
+    if warning.starts_with("kind '") {
+        return data.line_of("kind");
+    }
+
+    if warning.starts_with("category '") {
+        return data.line_of("category");
+    }
+
+    if warning.starts_with("version: says") {
+        return data.line_of("version");
+    }
+
+    if let Some(key) = warning.strip_suffix(" is no key libNIMA reads, so it was left out") {
+        return data.line_of(key);
+    }
+
+    if warning.starts_with("option '") {
+        let option = quoted(warning)?;
+
+        return data
+            .get("options")
+            .and_then(crate::yaml::Node::as_map)
+            .and_then(|options| options.line_of(&option));
+    }
+
+    if warning.starts_with("extras entry '") {
+        return data.line_of("extras");
+    }
+
+    None
 }
 
 /// Everything wrong with the library's file in a folder: libnima.yml, or an installer.yml read through the converter.
@@ -169,12 +229,18 @@ pub fn lint(folder: &Path) -> Result<(std::path::PathBuf, Vec<Problem>), String>
 }
 
 /// `libnima --check`: say what the check finds about each library, and write nothing. Returns an exit code: 0 when each can
-/// go in, 1 when one cannot.
+/// go in with nothing to do, 1 when one cannot, or there is something to do first (a CHECK), so a script can stop on it.
+///
+/// What the libraries need is worked out as the install would, fetching what it would fetch: one that cannot be had, or is
+/// too old, or would leave an installed library without the version it needs, is a NO for the run, as the install would be
+/// refused.
 pub fn run(session: &mut Session, request: &Request) -> i32 {
     let mut worst = 0;
     let mut marks: Vec<(String, Mark, String)> = Vec::new();
     // What the libraries checked before each will hold, as an install of them all would check it.
     let mut planned: Vec<(PathBuf, Held)> = Vec::new();
+    // Every library read, for what they need.
+    let mut loaded: Vec<Source> = Vec::new();
 
     for given in &request.libraries {
         session.ui().new_part();
@@ -238,7 +304,35 @@ pub fn run(session: &mut Session, request: &Request) -> i32 {
             .map(|finding| finding.message.clone())
             .unwrap_or_default();
 
+        if mark != Mark::Ok {
+            worst = 1;
+        }
+
         marks.push((name, mark, first));
+        loaded.push(source);
+    }
+
+    // What they need, once every one of them is read: a library given on the line can be what another needs.
+    if !loaded.is_empty() && marks.iter().all(|(_, mark, _)| *mark != Mark::No) {
+        session.ui().new_part();
+
+        let refused = match session.requirements_problem(&mut loaded) {
+            Some(why) => {
+                session.ui().error(&why);
+                true
+            }
+            // What --with, --without, --run and --no-run name, against every library the install would take.
+            None => session.unknown_names(&loaded, request).is_some(),
+        };
+
+        if refused {
+            worst = 1;
+
+            for (_, mark, said) in &mut marks {
+                *mark = Mark::No;
+                *said = "the install would be refused, see above".to_string();
+            }
+        }
     }
 
     // What is said of them all is about none of them.
@@ -284,10 +378,47 @@ mod tests {
     #[test]
     fn a_good_file_has_no_problems() {
         let root = tempfile::tempdir().unwrap();
-        let folder = library(root.path(), "demo", "headers: [a.h]\n", &["a.h"]);
+        let folder = library(
+            root.path(),
+            "demo",
+            "version: 1.0.0\nheaders: [a.h]\n",
+            &["a.h"],
+        );
         let (_, problems) = lint(&folder).unwrap();
 
         assert!(problems.is_empty(), "{problems:?}");
+    }
+
+    #[test]
+    fn a_version_no_minimum_can_be_met_by_is_warned_about() {
+        let root = tempfile::tempdir().unwrap();
+
+        for (body, wanted) in [
+            ("headers: [a.h]\n", "It has no version"),
+            (
+                "version: '1.0'\nheaders: [a.h]\n",
+                "Its version, 1.0, is not three numbers",
+            ),
+            (
+                "version: v1.0.0\nheaders: [a.h]\n",
+                "Its version, v1.0.0, is not three numbers",
+            ),
+        ] {
+            let folder = library(
+                &root.path().join(wanted.len().to_string()),
+                "demo",
+                body,
+                &["a.h"],
+            );
+            let (_, problems) = lint(&folder).unwrap();
+
+            assert!(
+                problems
+                    .iter()
+                    .any(|problem| problem.warning && problem.message.contains(wanted)),
+                "{body}: {problems:?}"
+            );
+        }
     }
 
     #[test]
@@ -316,7 +447,7 @@ mod tests {
         let folder = library(
             root.path(),
             "demo",
-            "kind: gadget\nheaders: [a.h]\n",
+            "version: 1.0.0\nkind: gadget\nheaders: [a.h]\n",
             &["a.h"],
         );
         let (_, problems) = lint(&folder).unwrap();
@@ -333,7 +464,7 @@ mod tests {
         std::fs::write(folder.join("a.h"), "").unwrap();
         std::fs::write(
             folder.join("libnima.yml"),
-            "name: demo\nplatform: [stm32, zephyr]\nheaders: [a.h]\nzephyr:\n  bad: 1\n",
+            "name: demo\nplatform: [stm32, zephyr]\nheaders: [a.h]\nzephyr:\n  bad: 1\nversion: 1.0.0\n",
         )
         .unwrap();
 
@@ -358,7 +489,7 @@ mod tests {
             lint_text(
                 &folder,
                 &path,
-                "name: demo\nplatform: stm32\nheaders: [a.h]\n"
+                "name: demo\nplatform: stm32\nversion: 1.0.0\nheaders: [a.h]\n"
             )
             .is_empty()
         );

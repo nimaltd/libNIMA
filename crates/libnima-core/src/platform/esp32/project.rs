@@ -29,7 +29,7 @@ use regex::Regex;
 
 use super::component::{component_name, groups};
 use super::{AFTER_PROJECT, BEFORE_PROJECT};
-use crate::blocks::{self, Group, INSTALLER, Marker};
+use crate::blocks::{self, Group, INSTALLER, Marker, Place};
 use crate::files::{self, backup, text_or_empty};
 use crate::manifest::{LIBRARY, MANIFEST_NAME, Manifest};
 use crate::paths;
@@ -51,6 +51,11 @@ pub static PROJECT_CMAKE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?mi)^[ \t]*include[ \t]*\([^)\n]*tools/cmake/project\.cmake")
         .expect("a valid pattern")
 });
+
+/// The project's project() call, after which its targets exist, every component's library among
+/// them.
+static PROJECT: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?mi)^[ \t]*project[ \t]*\(").expect("a valid pattern"));
 
 /// A project that names its own defaults files, in place of sdkconfig.defaults.
 static NAMES_DEFAULTS: LazyLock<Regex> = LazyLock::new(|| {
@@ -572,20 +577,31 @@ fn with_groups(
         let content = &lines[1..lines.len() - 1];
         let found = marker(&library.name, Some(&group.label));
 
-        text = if group.place == BEFORE_PROJECT {
-            blocks::place(&text, &found, content, newline, Some(&above_project))?
+        let side = if group.place == BEFORE_PROJECT {
+            Place::Above(&include_line)
         } else {
-            blocks::place(&text, &found, content, newline, None)?
+            Place::Below(&project_line)
         };
+
+        text = blocks::place(&text, &found, content, newline, side)?;
     }
 
     Ok(text)
 }
 
 /// Where include(project.cmake)'s line starts, for a group to go above it.
-fn above_project(text: &str) -> Option<usize> {
+fn include_line(text: &str) -> Option<usize> {
     PROJECT_CMAKE
         .find(text)
+        .map(|found| blocks::line_start(text, found.start()))
+}
+
+/// Where project()'s line starts, below include(project.cmake), for a group to go below it.
+fn project_line(text: &str) -> Option<usize> {
+    let after = include_line(text).unwrap_or(0);
+
+    PROJECT
+        .find_at(text, after)
         .map(|found| blocks::line_start(text, found.start()))
 }
 
@@ -693,15 +709,7 @@ fn integrate_defaults(project_root: &Path, library: &Manifest) -> Option<Outcome
     let updated = match span {
         Some((start, end)) => format!("{}{block}{}", &text[..start], &text[end..]),
         // At the end, after a blank line when the file has anything in it.
-        None => {
-            let head = text.trim_end_matches(['\r', '\n']);
-
-            if head.is_empty() {
-                format!("{block}{newline}")
-            } else {
-                format!("{head}{newline}{newline}{block}{newline}")
-            }
-        }
+        None => blocks::appended(&text, &block, newline),
     };
 
     let markers = [marker(name, None)];

@@ -189,7 +189,7 @@ pub fn unsafe_path(text: &str) -> Option<&'static str> {
     }
 
     if text.split('/').any(|part| part == "..") {
-        return Some("it climbs out with ..");
+        return Some("it climbs out with '..'");
     }
 
     None
@@ -417,6 +417,25 @@ fn check_source(text: &str, where_: &str, line: usize) -> Result<(), ManifestErr
 }
 
 /// A list of a manifest, or an error saying it should be one.
+/// An entry written as a mapping holds only the keys it can. One misspelt would do nothing without a word, a misspelt
+/// unless running a step every time, so it is refused, by its name and line, as a key under requires is. The keys at the
+/// top of the file are another matter: one this libNIMA does not know is only said, so a newer file still reads.
+pub(crate) fn only_keys(map: &Mapping, what: &str, keys: &[&str]) -> Result<(), ManifestError> {
+    let unknown: Vec<&str> = map.keys().filter(|name| !keys.contains(name)).collect();
+
+    match unknown.first() {
+        Some(first) => Err(ManifestError::at(
+            map.line_of(first).unwrap_or_default(),
+            format!(
+                "{what} has {}. It holds {}.",
+                unknown.join(", "),
+                keys.join(", ")
+            ),
+        )),
+        None => Ok(()),
+    }
+}
+
 fn list_of<'a>(value: Option<&'a Node>, key: &str) -> Result<&'a [Node], ManifestError> {
     match value {
         None => Ok(&[]),
@@ -452,6 +471,8 @@ fn entries(root: &Path, raw: Option<&Node>, key: &str) -> Result<Vec<FileEntry>,
                         ),
                     ));
                 }
+
+                only_keys(map, &format!("A {key} entry"), &["from", "to"])?;
 
                 let to = map.given("to").filter(|to| to.truthy()).map(Node::text);
                 let from = map.given("from").map(Node::text).or_else(|| to.clone());
@@ -548,6 +569,12 @@ impl Dependency {
                     ));
                 };
 
+                only_keys(
+                    map,
+                    "A requires.libraries entry",
+                    &["source", "manifest", "minimum", "name"],
+                )?;
+
                 manifest = map.given("manifest");
                 minimum = map.given("minimum");
                 name = map
@@ -634,18 +661,29 @@ impl Dependency {
     }
 }
 
+/// The library a requirement asks for, by its name and the oldest version that will do. Where it is fetched from, and at
+/// which ref, is said where it is fetched: a ref is no version, so "osal@v1.2.0" would read as one.
 impl fmt::Display for Dependency {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match &self.reference {
-            Some(reference) => write!(f, "{}@{reference}", self.name)?,
-            None => write!(f, "{}", self.name)?,
-        }
-
         match &self.minimum_text {
-            Some(minimum) => write!(f, " >= {minimum}"),
-            None => Ok(()),
+            Some(minimum) => write!(f, "{} >= {minimum}", self.name),
+            None => write!(f, "{}", self.name),
         }
     }
+}
+
+/// owner/name of a repository, in lower case, however it is written: owner/name with an @ref or not, or a GitHub URL with
+/// or without www. and .git. None for a bare name, which names no owner, and for anything else.
+pub fn repository_key(text: &str) -> Option<String> {
+    let text = text.trim();
+
+    if !text.contains('/') {
+        return None;
+    }
+
+    let (owner, repo, _) = crate::download::split_ref(text).ok()?;
+
+    Some(format!("{}/{}", owner.to_lowercase(), repo.to_lowercase()))
 }
 
 /// A part of a library the user chooses at install, as littlefs is for spif.
@@ -743,6 +781,12 @@ impl RunStep {
                 ),
             ));
         }
+
+        only_keys(
+            map,
+            &format!("run.{label}"),
+            &["label", "description", "command", "args", "unless"],
+        )?;
 
         let Some(command) = map.given("command") else {
             return Err(ManifestError::at(
@@ -850,6 +894,14 @@ pub struct Peripheral {
 impl Peripheral {
     fn read(data: &Node) -> Result<Peripheral, ManifestError> {
         // A word alone, "- spi", or a mapping.
+        if let Some(map) = data.as_map() {
+            only_keys(
+                map,
+                "A requires.peripherals entry",
+                &["type", "count", "note"],
+            )?;
+        }
+
         let (kind, count, note) = match data.as_map() {
             Some(map) => (
                 map.given("type").map(Node::text).unwrap_or_default(),
@@ -1075,7 +1127,10 @@ pub struct Manifest {
     pub license: String,
     /// The platforms it works on.
     pub platforms: Vec<Platform>,
+    /// driver when libnima.yml gives none, for what is made from it, such as library.json's keywords.
     pub kind: String,
+    /// Whether libnima.yml gives the kind, so what is shown shows only what it says.
+    pub kind_given: bool,
     pub category: String,
     pub provides: Vec<String>,
     pub requires: Requirements,
@@ -1206,6 +1261,24 @@ impl Manifest {
             .collect()
     }
 
+    /// Call a library this one needs by the name it goes by in the project: the one found through the repository the
+    /// requirement names, or the one the fetched library turned out to have. The record's needs then name it as it is
+    /// installed, so an uninstall can refuse to take it out from under this one.
+    pub fn rename_dependency(&mut self, dependency: &Dependency, name: &str) {
+        let chosen = self.chosen.clone();
+        let options = self
+            .options
+            .iter_mut()
+            .filter(|option| chosen.contains(&option.name))
+            .flat_map(|option| option.libraries.iter_mut());
+
+        for found in self.requires.libraries.iter_mut().chain(options) {
+            if found == dependency {
+                found.name = name.to_string();
+            }
+        }
+    }
+
     /// File names the IDE has to compile, as they end up in the install folder.
     ///
     /// Only files a compiler can actually take are listed. Keil and IAR name every file
@@ -1295,12 +1368,22 @@ impl Manifest {
         shared
     }
 
-    /// A one line description of what this library is, for listings.
+    /// A one line description of what this library is, for listings: its kind and category as its libnima.yml gives
+    /// them, and nothing it does not give.
     pub fn summary(&self) -> String {
-        if !self.category.is_empty() && self.category != self.kind {
-            format!("{} / {}", self.kind, self.category)
+        let kind = if self.kind_given {
+            self.kind.as_str()
         } else {
-            self.kind.clone()
+            ""
+        };
+
+        match (
+            kind.is_empty(),
+            self.category.is_empty() || self.category == kind,
+        ) {
+            (false, false) => format!("{kind} / {}", self.category),
+            (false, true) => kind.to_string(),
+            (true, _) => self.category.clone(),
         }
     }
 }
@@ -1325,6 +1408,22 @@ fn code_lists<'a>(
 /// The version a header's text says of itself, in the @version tag of its file comment.
 pub fn version_in(text: &str) -> Option<String> {
     VERSION_TAG.captures(text).map(|found| found[1].to_string())
+}
+
+/// What is wrong with a library's own version, as a requirement's minimum is compared with it, or None when it is three
+/// numbers, as a minimum is.
+pub fn version_problem(version: &str) -> Option<String> {
+    let version = version.trim();
+
+    if version.is_empty() {
+        return Some(
+            "It has no version, neither a @version tag in its first header nor a version: in libnima.yml".to_string(),
+        );
+    }
+
+    version_tuple(version)
+        .is_none()
+        .then(|| format!("Its version, {version}, is not three numbers like 1.0.0"))
 }
 
 /// The @version tag in the first header's file comment, or None.
@@ -1418,6 +1517,10 @@ fn once_file(entry: &Node) -> Result<FileEntry, ManifestError> {
         ));
     }
 
+    if let Some(map) = map {
+        only_keys(map, "A once entry", &["from", "to"])?;
+    }
+
     let given = match map {
         Some(map) => map
             .given("from")
@@ -1463,6 +1566,8 @@ fn extra_mapping(
     empty: &mut Vec<String>,
 ) -> Result<(), ManifestError> {
     let line = item.line;
+
+    only_keys(map, "An extras entry", &["from", "to", "root"])?;
 
     if map.has("to") && map.has("root") {
         return Err(ManifestError::at(
@@ -1573,6 +1678,83 @@ fn unsafe_name(name: &str) -> bool {
             .any(|char| char.is_control() || "/\\<>\"';&|:*?".contains(char))
 }
 
+/// Why a name cannot be a library's folder on every computer, or its Kconfig symbol, or None when it can. The same
+/// answer wherever the check runs, so a build server on Linux refuses a name Windows could not install.
+fn unusable_name(name: &str) -> Option<&'static str> {
+    const DEVICES: [&str; 4] = ["CON", "PRN", "AUX", "NUL"];
+
+    let stem = name.split('.').next().unwrap_or(name).to_uppercase();
+    let numbered = ["COM", "LPT"].iter().any(|device| {
+        stem.strip_prefix(device).is_some_and(|rest| {
+            rest.len() == 1 && ('1'..='9').contains(&rest.chars().next().unwrap_or('0'))
+        })
+    });
+
+    if DEVICES.contains(&stem.as_str()) || numbered {
+        return Some("That is a device's name on Windows, and no folder can have it there.");
+    }
+
+    if name.ends_with(['.', ' ']) {
+        return Some("It ends in a dot or a space, which Windows takes off a folder's name.");
+    }
+
+    if !name
+        .chars()
+        .all(|char| char.is_ascii_alphanumeric() || "_-.".contains(char))
+    {
+        return Some(
+            "A name is letters, digits, _, - and . only, as it becomes the folder's name, and the Kconfig symbol and \
+             the C names made from it.",
+        );
+    }
+
+    None
+}
+
+/// What no install could take: a once file, or an extra with a root, on a file of the project libNIMA edits or reads as
+/// the project's own, and a library that needs itself. Refused as the file is read, so --lint says so too.
+fn refuse_what_no_install_takes(
+    manifest: &Manifest,
+    running: Option<Platform>,
+) -> Result<(), ManifestError> {
+    if let Some(platform) = running {
+        let managed = crate::platform::managed_patterns(platform);
+
+        for (key, entries) in [("once", &manifest.once), ("extras", &manifest.placed)] {
+            for entry in entries {
+                if managed
+                    .iter()
+                    .any(|pattern| paths::name_matches(&entry.destination, pattern))
+                {
+                    return Err(ManifestError::at(
+                        entry.line,
+                        format!(
+                            "{key} puts {place} in the project's folder, and {place} is a file libNIMA edits or reads as \
+                             the project's own. Give it another place.",
+                            place = entry.destination
+                        ),
+                    ));
+                }
+            }
+        }
+    }
+
+    for dependency in manifest
+        .requires
+        .libraries
+        .iter()
+        .chain(manifest.options.iter().flat_map(|option| &option.libraries))
+    {
+        if dependency.name == manifest.name {
+            return Err(ManifestError::new(format!(
+                "requires.libraries has {dependency}, the library itself, and a library cannot need itself."
+            )));
+        }
+    }
+
+    Ok(())
+}
+
 /// What a whole manifest says, once its text is known to be readable.
 fn read_library(
     root: &Path,
@@ -1592,6 +1774,13 @@ fn read_library(
                  path, quote or control character.",
                 name_node.shown()
             ),
+        ));
+    }
+
+    if let Some(why) = unusable_name(&name) {
+        return Err(ManifestError::at(
+            name_node.line,
+            format!("name is {}. {why}", name_node.shown()),
         ));
     }
 
@@ -1758,6 +1947,19 @@ fn read_library(
                 ));
             };
 
+            only_keys(
+                body,
+                &format!("options.{}", entry.key),
+                &[
+                    "description",
+                    "libraries",
+                    "headers",
+                    "sources",
+                    "zephyr",
+                    "esp32",
+                ],
+            )?;
+
             let mut libraries = Vec::new();
 
             for item in list_of(
@@ -1864,6 +2066,7 @@ fn read_library(
         license: text_of("license"),
         platforms,
         kind,
+        kind_given: data.get("kind").is_some(),
         category,
         provides,
         requires,
@@ -1889,6 +2092,8 @@ fn read_library(
         platform::read_part(running, &mut manifest, data)?;
     }
 
+    refuse_what_no_install_takes(&manifest, running)?;
+
     Ok(manifest)
 }
 
@@ -1901,6 +2106,26 @@ fn escapes(destination: &str) -> bool {
 /// Things worth saying out loud that are not bad enough to refuse the install.
 fn warnings_of(manifest: &Manifest, data: &Mapping, running: Option<Platform>) -> Vec<String> {
     let mut found = Vec::new();
+
+    // Its own version, which another library's minimum is compared with.
+    if let Some(why) = version_problem(&manifest.version) {
+        found.push(format!(
+            "{why}, so no other library's minimum can ever be met by it"
+        ));
+    }
+
+    let declared = data.given("version").map(Node::text).unwrap_or_default();
+
+    if let Some(tagged) = header_version(&manifest.root, &manifest.headers)
+        && !declared.trim().is_empty()
+        && declared.trim() != tagged
+    {
+        found.push(format!(
+            "version: says {}, and the @version tag of its first header says {tagged}. The tag is the one used: drop \
+             version: or make them the same",
+            declared.trim()
+        ));
+    }
 
     if !KINDS.contains(&manifest.kind.as_str()) {
         found.push(format!(
@@ -2002,6 +2227,15 @@ fn refuse_once_in_a_library(manifest: &Manifest, platform: Platform) -> Result<(
     Ok(())
 }
 
+/// Where in a library's file a problem is, as every message names it: the path with forward slashes, and the line when
+/// one line is, libnima.yml:10.
+pub fn in_file_at(path: &Path, line: Option<usize>) -> String {
+    match line {
+        Some(line) => format!("{}:{line}", paths::posix(path)),
+        None => paths::posix(path),
+    }
+}
+
 /// What a library's file says, checked against the library's own files, for the platform
 /// of the run.
 fn checked(
@@ -2015,7 +2249,7 @@ fn checked(
     check_version(data)?;
 
     let in_file = |error: ManifestError| ManifestError {
-        message: format!("{}: {}", path.display(), error.message),
+        message: format!("{}: {}", in_file_at(path, error.line), error.message),
         line: error.line,
     };
 
@@ -2031,7 +2265,7 @@ fn checked(
         )));
     }
 
-    let manifest = read_library(root, data, running)?;
+    let manifest = read_library(root, data, running).map_err(in_file)?;
 
     if manifest.code_files().is_empty() {
         return Err(in_file(ManifestError::new(
@@ -2149,10 +2383,21 @@ fn checked(
     let twice = given_twice(destinations.iter().copied());
 
     if !twice.is_empty() {
-        return Err(in_file(ManifestError::new(format!(
-            "It lists two once files that both land in {}.",
-            twice.join(", ")
-        ))));
+        // At the second of them, the one that would land where the first does.
+        let line = manifest
+            .once
+            .iter()
+            .filter(|entry| entry.destination == twice[0])
+            .nth(1)
+            .map_or(0, |entry| entry.line);
+
+        return Err(in_file(ManifestError::at(
+            line,
+            format!(
+                "It lists two once files that both land in {}.",
+                twice.join(", ")
+            ),
+        )));
     }
 
     // An extra with a root is written on every install, a once file never is, so one
@@ -2173,10 +2418,19 @@ fn checked(
     both.dedup();
 
     if !both.is_empty() {
-        return Err(in_file(ManifestError::new(format!(
-            "It lists two files that both land in the project at {}.",
-            both.join(", ")
-        ))));
+        let line = manifest
+            .placed
+            .iter()
+            .find(|entry| entry.destination == both[0])
+            .map_or(0, |entry| entry.line);
+
+        return Err(in_file(ManifestError::at(
+            line,
+            format!(
+                "It lists two files that both land in the project at {}.",
+                both.join(", ")
+            ),
+        )));
     }
 
     let shared = manifest.shared_option_files();
@@ -2202,20 +2456,27 @@ fn checked(
     // Always refused, never merely warned about. A manifest can arrive over the network,
     // and a destination like "../../Core/Src/main.c" would write into the user's own code
     // rather than the folder they agreed to.
-    let escaping: Vec<&str> = manifest
+    let escaping: Vec<&FileEntry> = manifest
         .all_code_files()
         .into_iter()
         .chain(&manifest.once)
         .chain(&manifest.placed)
         .filter(|entry| escapes(&entry.destination) || unsafe_path(&entry.destination).is_some())
-        .map(|entry| entry.destination.as_str())
         .collect();
 
-    if !escaping.is_empty() {
-        return Err(in_file(ManifestError::new(format!(
-            "It sends files outside the install folder, which is never allowed: {}",
-            escaping.join(", ")
-        ))));
+    if let Some(first) = escaping.first() {
+        let listed: Vec<&str> = escaping
+            .iter()
+            .map(|entry| entry.destination.as_str())
+            .collect();
+
+        return Err(in_file(ManifestError::at(
+            first.line,
+            format!(
+                "It sends files outside the install folder, which is never allowed: {}",
+                listed.join(", ")
+            ),
+        )));
     }
 
     if let Some(platform) = running {
@@ -2243,7 +2504,7 @@ pub fn load(library_root: &Path, running: Option<Platform>) -> Result<Manifest, 
     };
 
     let in_file = |error: ManifestError| ManifestError {
-        message: format!("{}: {}", path.display(), error.message),
+        message: format!("{}: {}", in_file_at(&path, error.line), error.message),
         line: error.line,
     };
 
@@ -2276,7 +2537,7 @@ pub fn load_text(
     running: Option<Platform>,
 ) -> Result<Manifest, ManifestError> {
     let in_file = |error: ManifestError| ManifestError {
-        message: format!("{}: {}", path.display(), error.message),
+        message: format!("{}: {}", in_file_at(path, error.line), error.message),
         line: error.line,
     };
 
@@ -2284,8 +2545,8 @@ pub fn load_text(
     let data = node.as_map().expect("parse() gives a mapping");
 
     checked(root, path, data, running).map_err(|error| {
-        // An error from checked() already names the file when it is about the whole of it.
-        if error.message.contains(&path.display().to_string()) {
+        // An error from checked() names the file already.
+        if error.message.starts_with(&paths::posix(path)) {
             error
         } else {
             in_file(error)
@@ -2349,7 +2610,40 @@ mod tests {
         assert_eq!(manifest.headers[0].destination, "src/demo.h");
         assert_eq!(manifest.include_dirs(), ["src"]);
         assert_eq!(manifest.build_sources(), ["src/demo.c"]);
-        assert!(manifest.warnings.is_empty(), "{:?}", manifest.warnings);
+        // Only that no minimum can be met by it, with no version.
+        assert_eq!(manifest.warnings.len(), 1, "{:?}", manifest.warnings);
+        assert!(manifest.warnings[0].contains("It has no version"));
+
+        let versioned = load_body(
+            &format!("version: 1.0.0\n{ONE}"),
+            &["src/demo.h", "src/demo.c"],
+        )
+        .unwrap();
+
+        assert!(versioned.warnings.is_empty(), "{:?}", versioned.warnings);
+    }
+
+    #[test]
+    fn a_version_that_differs_from_the_tag_is_said_and_the_tag_used() {
+        let root = tempfile::tempdir().unwrap();
+        let folder = library(
+            root.path(),
+            "demo",
+            &format!("version: 2.0.0\n{ONE}"),
+            &["src/demo.c"],
+        );
+        fs::write(folder.join("src/demo.h"), "/**\n * @version 1.0.0\n */\n").unwrap();
+
+        let manifest = load(&folder, Some(Platform::Stm32)).unwrap();
+
+        assert_eq!(manifest.version, "1.0.0");
+        assert!(
+            manifest.warnings.iter().any(|warning| warning.contains(
+                "version: says 2.0.0, and the @version tag of its first header says 1.0.0"
+            )),
+            "{:?}",
+            manifest.warnings
+        );
     }
 
     #[test]
@@ -2512,6 +2806,123 @@ mod tests {
     }
 
     #[test]
+    fn a_misspelt_key_inside_an_entry_is_refused_by_name_and_line() {
+        let files = ["src/demo.h", "src/demo.c", "a.txt", "docs/guide.md"];
+
+        for (body, key, line) in [
+            (
+                "run:\n  - label: hello\n    description: Make a folder\n    command: [mkdir, x]\n    unles: prj.conf\n",
+                "unles",
+                5,
+            ),
+            ("once:\n  - from: a.txt\n    too: docs/a.txt\n", "too", 3),
+            (
+                "requires:\n  libraries:\n    - source: owner/other\n      minimun: 9.9.9\n",
+                "minimun",
+                4,
+            ),
+            (
+                "requires:\n  peripherals:\n    - type: spi\n      cout: 2\n",
+                "cout",
+                4,
+            ),
+            (
+                "extras:\n  - from: docs/guide.md\n    to: guide.md\n    rooot: tools\n",
+                "rooot",
+                4,
+            ),
+            (
+                "options:\n  extra:\n    descripton: The extra part\n    headers: [src/demo.h]\n",
+                "descripton",
+                3,
+            ),
+        ] {
+            let error = load_body(&format!("{body}{ONE}"), &files).unwrap_err();
+
+            assert!(
+                error.message.contains(&format!("has {key}. It holds")),
+                "{key}: {}",
+                error.message
+            );
+            // Below name and platform.
+            assert_eq!(error.line, Some(line + 2), "{key}: {}", error.message);
+        }
+
+        let error = load_body(
+            "headers:\n  - from: src/demo.h\n    tto: inc/demo.h\nsources:\n  - src/demo.c\n",
+            &files,
+        )
+        .unwrap_err();
+
+        assert!(
+            error
+                .message
+                .contains("A headers entry has tto. It holds from, to."),
+            "{}",
+            error.message
+        );
+
+        // At the top of the file, a key this libNIMA does not know is only said, so a newer file still reads.
+        assert!(load_body(&format!("newkey: 1\n{ONE}"), &files).is_ok());
+    }
+
+    #[test]
+    fn a_name_no_folder_on_every_computer_can_have_is_refused() {
+        for (name, why) in [
+            ("con", "device's name on Windows"),
+            ("Com3", "device's name on Windows"),
+            ("lpt1.x", "device's name on Windows"),
+            ("'mini.'", "ends in a dot"),
+            ("\u{fc}n\u{ef}", "letters, digits"),
+            ("my lib", "letters, digits"),
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let folder = root.path().join("lib");
+            fs::create_dir_all(folder.join("src")).unwrap();
+            fs::write(folder.join("src/demo.h"), "").unwrap();
+            fs::write(folder.join("src/demo.c"), "").unwrap();
+            fs::write(
+                folder.join("libnima.yml"),
+                format!("name: {name}\nplatform: stm32\n{ONE}"),
+            )
+            .unwrap();
+
+            let error = load(&folder, Some(Platform::Stm32)).unwrap_err();
+
+            assert!(error.message.contains(why), "{name}: {}", error.message);
+            assert_eq!(error.line, Some(1), "{name}");
+        }
+
+        for name in ["com", "lpt10", "mini-2.0", "my_lib"] {
+            assert!(unusable_name(name).is_none(), "{name}");
+        }
+    }
+
+    #[test]
+    fn what_no_install_takes_is_refused_as_the_file_is_read() {
+        let files = ["src/demo.h", "src/demo.c", "start.txt"];
+
+        for (body, wanted) in [
+            (
+                "once:\n  - from: start.txt\n    to: CMakeLists.txt\n",
+                "once puts CMakeLists.txt in the project's folder",
+            ),
+            (
+                "once:\n  - from: start.txt\n    to: .libnima.json\n",
+                "once puts .libnima.json in the project's folder",
+            ),
+            (
+                "requires:\n  libraries:\n    - demo >= 1.0.0\n",
+                "the library itself",
+            ),
+        ] {
+            let error = error_of(&format!("{body}{ONE}"), &files);
+
+            assert!(error.contains(wanted), "{error}");
+        }
+    }
+
+    #[test]
     fn a_file_the_repository_does_not_have_is_named_with_its_line() {
         let error = load_body(ONE, &["src/demo.h"]).unwrap_err();
 
@@ -2618,7 +3029,9 @@ mod tests {
         assert_eq!(full.reference.as_deref(), Some("v1.2.0"));
         assert_eq!(full.minimum, Some((1, 1, 0)));
         assert_eq!(full.fetch(), "someone/osal@v1.2.0");
-        assert_eq!(full.to_string(), "osal@v1.2.0 >= 1.1.0");
+        // A ref says where it is fetched from, and is no version, so it is not said as part of what is needed.
+        assert_eq!(full.to_string(), "osal >= 1.1.0");
+        assert_eq!(read("someone/osal@v1.2.0").unwrap().to_string(), "osal");
 
         assert!(full.satisfied_by(Some("1.1.0")));
         assert!(!full.satisfied_by(Some("1.0.9")));
@@ -2627,6 +3040,24 @@ mod tests {
         assert!(read("a b c").is_err());
         assert!(read("osal@../x").is_err());
         assert!(read("osal >= 1.1").is_err());
+    }
+
+    #[test]
+    fn a_repository_is_the_same_however_it_is_written() {
+        let key = |text: &str| repository_key(text);
+
+        assert_eq!(key("Tester/Fw-Core").as_deref(), Some("tester/fw-core"));
+        assert_eq!(key("tester/fw-core@v0.2.0"), key("tester/fw-core"));
+        assert_eq!(
+            key("https://github.com/tester/fw-core"),
+            key("tester/fw-core")
+        );
+        assert_eq!(
+            key("https://www.github.com/tester/fw-core.git/"),
+            key("tester/fw-core")
+        );
+        assert_eq!(key("osal"), None);
+        assert_eq!(key(""), None);
     }
 
     #[test]

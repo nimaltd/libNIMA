@@ -3,17 +3,19 @@
 //! The core does everything a library needs whatever it is installed into. This says the
 //! rest for Zephyr: the part of libnima.yml only Zephyr reads, the checks against the
 //! application's prj.conf, and the integration, which makes the library a Zephyr module of
-//! the application (module.rs) and adds it to the application's CMakeLists.txt and prj.conf
-//! (app.rs).
+//! the application (module.rs), adds it to the application's CMakeLists.txt and prj.conf
+//! (app.rs), and includes its devicetree in the application's overlay (overlay.rs).
 
 pub mod app;
 pub mod module;
+pub mod overlay;
 
 use std::path::{Path, PathBuf};
 
 use crate::blocks::Group;
+use crate::choose;
 use crate::installer::{InstallError, Installed};
-use crate::manifest::{Manifest, ManifestError};
+use crate::manifest::{Manifest, ManifestError, is_pattern, version_tuple};
 use crate::paths;
 use crate::platform::Platform;
 use crate::platform::kconfig::{self, Assignment, Setting, read_settings, symbol_of};
@@ -25,8 +27,15 @@ use crate::yaml::{Mapping, Node, Value};
 
 /// The keys of the zephyr section, and of its two parts: what each writes, and into which file.
 const KEYS: [&str; 4] = ["symbol", "settings", "project", "library"];
-const PROJECT_KEYS: [&str; 3] = ["conf", "sysbuild", "cmake"];
+const PROJECT_KEYS: [&str; 4] = ["conf", "sysbuild", "cmake", "overlay"];
 const LIBRARY_KEYS: [&str; 3] = ["kconfig", "conf", "cmake"];
+
+/// What an option's project part holds: its own CMake lines, and its own includes in the overlay.
+const OPTION_PROJECT_KEYS: [&str; 2] = ["cmake", "overlay"];
+
+/// The release that brought zephyr.project.overlay. A libNIMA from before stops on it as a key it does not know, where
+/// a file asking for this one makes it say to update.
+const OVERLAY_RELEASE: (u64, u64, u64) = (1, 3, 0);
 
 /// Where a group of CMake lines goes: the module's own CMakeLists.txt, inside its
 /// if(CONFIG_...); the application's, above find_package(Zephyr), for what Zephyr reads as it
@@ -43,6 +52,7 @@ pub const PRJ_KEY: &str = "zephyr.project.conf";
 pub const SYSBUILD_KEY: &str = "zephyr.project.sysbuild";
 pub const DEFAULTS_KEY: &str = "zephyr.library.kconfig";
 pub const CONF_KEY: &str = "zephyr.library.conf";
+pub const OVERLAY_KEY: &str = "zephyr.project.overlay";
 
 /// The zephyr section of libnima.yml, with what it leaves out filled in. It lists what a
 /// library writes under where it goes: project, the application's own files, and library, its
@@ -63,6 +73,12 @@ pub struct ZephyrPart {
     /// Its Kconfig fragment, read after the application's Kconfig files.
     pub conf: Vec<Listed<Assignment>>,
     pub cmake: Vec<Group>,
+    /// The files its #include lines in the application's devicetree overlay name.
+    pub overlay: Vec<Listed<overlay::Include>>,
+    /// Each option's own, written while it is taken, by the option's name.
+    pub option_overlay: Vec<(String, Vec<Listed<overlay::Include>>)>,
+    /// What reading the section found worth saying, short of refusing the file.
+    pub warned: Vec<String>,
 }
 
 /// The keys from lib-installer before 4.0.0, each refused with where it went, and any key the
@@ -269,6 +285,35 @@ fn check_lists(part: &ZephyrPart, library: &Manifest) -> Result<(), ManifestErro
         )));
     }
 
+    // The module libNIMA writes in the library's folder, zephyr/CMakeLists.txt and zephyr/Kconfig
+    // with it, unless the library ships one of its own: a file of the library's at one of those
+    // places would be written over by the module.
+    let own_module = library
+        .extras
+        .iter()
+        .chain(library.all_code_files())
+        .any(|entry| entry.destination == "zephyr/module.yml");
+
+    if !own_module
+        && let Some(entry) = library
+            .extras
+            .iter()
+            .chain(library.all_code_files())
+            .find(|entry| {
+                entry.destination == "zephyr/CMakeLists.txt"
+                    || entry.destination == "zephyr/Kconfig"
+            })
+    {
+        return Err(ManifestError::at(
+            entry.line,
+            format!(
+                "libnima.yml puts a file of {}'s own at {}, where libNIMA writes the library's Zephyr module. Ship the \
+                 whole module, its zephyr/module.yml with it, or give the file another place.",
+                library.name, entry.destination
+            ),
+        ));
+    }
+
     // The fragment's place in the library's folder, which a file of the library's own would
     // share, each install writing over the other.
     let place = format!("zephyr/{}", module::fragment_name(&library.name));
@@ -356,7 +401,7 @@ pub fn read_part(library: &mut Manifest, data: &Mapping) -> Result<ZephyrPart, M
     let from_project = |key: &str| project.and_then(|project| project.get(key));
     let from_own = |key: &str| own.and_then(|own| own.get(key));
 
-    let part = ZephyrPart {
+    let mut part = ZephyrPart {
         prj: settings_list(from_project("conf"), PRJ_KEY, "CONFIG_")?,
         sysbuild: settings_list(from_project("sysbuild"), SYSBUILD_KEY, "SB_CONFIG_")?,
         defaults: settings_list(from_own("kconfig"), DEFAULTS_KEY, "CONFIG_")?,
@@ -369,6 +414,9 @@ pub fn read_part(library: &mut Manifest, data: &Mapping) -> Result<ZephyrPart, M
             MODULE,
             None,
         )?,
+        overlay: overlay::read(from_project("overlay"), OVERLAY_KEY)?,
+        option_overlay: Vec::new(),
+        warned: Vec::new(),
         symbol,
         symbol_note,
         settings,
@@ -376,7 +424,7 @@ pub fn read_part(library: &mut Manifest, data: &Mapping) -> Result<ZephyrPart, M
 
     check_lists(&part, library)?;
 
-    // Each option's own groups of CMake lines, written while it is taken.
+    // Each option's own groups of CMake lines, and its own includes in the overlay, written while it is taken.
     let options = data.given("options").and_then(Node::as_map);
 
     for option in &mut library.options {
@@ -397,7 +445,46 @@ pub fn read_part(library: &mut Manifest, data: &Mapping) -> Result<ZephyrPart, M
             ));
         }
 
-        option.cmake = titles::option_cmake(&option.name, given, "zephyr", &PLACES, MODULE)?;
+        option.cmake = titles::option_cmake(
+            &option.name,
+            given,
+            "zephyr",
+            &PLACES,
+            MODULE,
+            &OPTION_PROJECT_KEYS,
+        )?;
+
+        let includes = overlay::read(
+            given
+                .and_then(Node::as_map)
+                .and_then(|body| body.get("project"))
+                .and_then(Node::as_map)
+                .and_then(|project| project.get("overlay")),
+            &format!("options.{}.{OVERLAY_KEY}", option.name),
+        )?;
+
+        if !includes.is_empty() {
+            part.option_overlay.push((option.name.clone(), includes));
+        }
+    }
+
+    // A file using zephyr.project.overlay asks for the libNIMA that reads it, so one from before says to update rather
+    // than stop on a key it does not know.
+    let asked = data
+        .given("requires")
+        .and_then(Node::as_map)
+        .and_then(|requires| requires.given("libnima"))
+        .and_then(|given| version_tuple(&given.text()));
+
+    if (!part.overlay.is_empty() || !part.option_overlay.is_empty())
+        && asked.is_none_or(|asked| asked < OVERLAY_RELEASE)
+    {
+        let (major, minor, patch) = OVERLAY_RELEASE;
+
+        part.warned.push(format!(
+            "{OVERLAY_KEY} is new in libNIMA {major}.{minor}.{patch}: ask for it with requires.libnima: \
+             {major}.{minor}.{patch}, so an older libNIMA says to update rather than stop on a key it does not know"
+        ));
     }
 
     // A label names one group, among the library's and all its options'.
@@ -444,6 +531,51 @@ pub fn warnings(manifest: &Manifest) -> Vec<String> {
         }
     }
 
+    found.extend(part.warned.iter().cloned());
+
+    // A file the overlay is to include, which nothing in the file puts where it says: a once file or an extra with a
+    // root in the application's folder, or one of the library's own files in its folder. Said rather than refused, since
+    // the install says it again, and leaves its line out, when the file is not there.
+    let in_project: Vec<&str> = manifest
+        .once
+        .iter()
+        .chain(&manifest.placed)
+        .map(|entry| entry.destination.as_str())
+        .collect();
+    let in_library: Vec<&str> = manifest
+        .all_code_files()
+        .into_iter()
+        .chain(&manifest.extras)
+        .map(|entry| entry.destination.as_str())
+        .collect();
+    let mut includes: Vec<&overlay::Include> =
+        part.overlay.iter().map(|entry| &entry.item).collect();
+    includes.extend(
+        part.option_overlay
+            .iter()
+            .flat_map(|(_, own)| own.iter().map(|entry| &entry.item)),
+    );
+
+    let mut said: Vec<String> = Vec::new();
+
+    for include in includes {
+        let known = if include.in_library {
+            &in_library
+        } else {
+            &in_project
+        };
+
+        // Said once for a file, however many overlays it goes into.
+        if !known.contains(&include.file.as_str()) && !said.contains(&include.written()) {
+            said.push(include.written());
+            found.push(format!(
+                "{OVERLAY_KEY} has {}, which nothing in this file puts there: a once file or an extra with a root puts \
+                 one in the application's folder, and {{library}}/... names one of the library's own",
+                include.written()
+            ));
+        }
+    }
+
     found
 }
 
@@ -457,15 +589,157 @@ pub struct Zephyr {
     /// The file each library of this run goes into, settled by check() and used by
     /// integrate(), so the two always agree.
     conf_of: Vec<(String, String)>,
+    /// The overlay given for this run, by --overlay, in place of what each library's file
+    /// says: a path, or a wildcard.
+    overlay_given: Option<String>,
+    /// The overlays the answer to the question picked, which is asked once however many
+    /// libraries go in.
+    overlay_chosen: Option<Vec<String>>,
+    /// The overlays this run may make when they are missing: app.overlay, for an
+    /// application that has none, and the one --overlay names.
+    overlay_made: Vec<String>,
+    /// Where each library's includes go, settled by check() and used by integrate().
+    overlay_of: Vec<(String, Vec<overlay::Placed>)>,
 }
 
 impl Zephyr {
-    pub fn new(conf_given: Option<String>) -> Zephyr {
+    pub fn new(conf_given: Option<String>, overlay_given: Option<String>) -> Zephyr {
         Zephyr {
             conf_given,
             conf_chosen: None,
             conf_of: Vec::new(),
+            overlay_given,
+            overlay_chosen: None,
+            overlay_made: Vec::new(),
+            overlay_of: Vec::new(),
         }
+    }
+
+    /// Where each of the library's includes goes: where --overlay says, for every one; else
+    /// where its to says; else, for a file alone, the overlays that have it already, or the
+    /// application's one overlay, app.overlay when it has none, or those the answer picks when
+    /// it has several.
+    fn overlays_for(
+        &mut self,
+        library: &Manifest,
+        project_root: &Path,
+        ui: &mut dyn Ui,
+    ) -> Vec<overlay::Placed> {
+        if let Some((_, plan)) = self
+            .overlay_of
+            .iter()
+            .find(|(name, _)| *name == library.name)
+        {
+            return plan.clone();
+        }
+
+        let entries = overlay::entries(library);
+        let mut plan = Vec::new();
+        let mut alone: Option<Vec<String>> = None;
+
+        for entry in &entries {
+            let (into, why) = if let Some(given) = self.overlay_given.clone() {
+                let found = overlay::named(project_root, &given);
+
+                if found.is_empty() && !is_pattern(&given) {
+                    // Named in full on the command line, it is made, as the Kconfig file of --conf is.
+                    if !self.overlay_made.contains(&given) {
+                        self.overlay_made.push(given.clone());
+                    }
+
+                    (vec![given], None)
+                } else {
+                    let why = found.is_empty().then(|| {
+                        format!("--overlay {given} matches no overlay of the application")
+                    });
+
+                    (found, why)
+                }
+            } else if let Some(to) = &entry.item.to {
+                let found = overlay::named(project_root, to);
+                let why = found.is_empty().then(|| {
+                    if is_pattern(to) {
+                        format!("{to} matches no overlay of the application")
+                    } else {
+                        format!("the application has no {to}")
+                    }
+                });
+
+                (found, why)
+            } else {
+                if alone.is_none() {
+                    alone = Some(self.overlays_alone(library, project_root, &entries, ui));
+                }
+
+                let found = alone.clone().unwrap_or_default();
+                let why = found
+                    .is_empty()
+                    .then(|| "no overlay was chosen for it".to_string());
+
+                (found, why)
+            };
+
+            plan.push(overlay::Placed {
+                entry: entry.clone(),
+                into,
+                why,
+            });
+        }
+
+        self.overlay_of.push((library.name.clone(), plan.clone()));
+
+        plan
+    }
+
+    /// The overlays a file alone goes into: those the library's block has one of its files in
+    /// already, on an update; else those chosen earlier in this run; else the application's
+    /// one overlay, app.overlay when it has none, or those the answer picks. Nothing when
+    /// nobody answers, or the answer picks none: the lines are never put in by a guess.
+    fn overlays_alone(
+        &mut self,
+        library: &Manifest,
+        project_root: &Path,
+        entries: &[Listed<overlay::Include>],
+        ui: &mut dyn Ui,
+    ) -> Vec<String> {
+        let leaves: Vec<String> = entries
+            .iter()
+            .filter(|entry| entry.item.to.is_none())
+            .map(|entry| paths::leaf(&entry.item.file).to_string())
+            .collect();
+        let kept: Vec<String> = overlay::holding(project_root, &library.name)
+            .into_iter()
+            .filter(|found| overlay::includes_any(project_root, found, &library.name, &leaves))
+            .collect();
+
+        if !kept.is_empty() {
+            return kept;
+        }
+
+        if let Some(chosen) = &self.overlay_chosen {
+            return chosen.clone();
+        }
+
+        let offered = overlay::offered(project_root);
+        let chosen = match offered.len() {
+            0 => {
+                self.overlay_made.push(overlay::APP_OVERLAY.to_string());
+                vec![overlay::APP_OVERLAY.to_string()]
+            }
+            1 => offered,
+            _ => choose::ask(
+                "This application has more than one overlay:",
+                "Overlay for the libraries' devicetree: ",
+                &offered,
+                true,
+                ui,
+            )
+            .unwrap_or_default(),
+        };
+
+        self.overlay_chosen = Some(chosen.clone());
+
+        chosen
     }
 
     /// The Kconfig file this library's symbols go into, as a path from the application's
@@ -473,7 +747,8 @@ impl Zephyr {
     ///
     /// The one that already has its block, on an update. Otherwise the one given with --conf,
     /// or chosen earlier in this run. Otherwise, with more than one to choose from and someone
-    /// to ask, the answer, and prj.conf when there is nobody or nothing to choose.
+    /// to ask, the answer, and prj.conf when there is nobody or nothing to choose. A once file of
+    /// the library's is never offered, as it could not hold the block.
     fn conf_for(&mut self, library: &Manifest, project_root: &Path, ui: &mut dyn Ui) -> String {
         if let Some((_, conf)) = self.conf_of.iter().find(|(name, _)| *name == library.name) {
             return conf.clone();
@@ -484,7 +759,10 @@ impl Zephyr {
             .or_else(|| self.conf_chosen.clone());
 
         if chosen.is_none() {
-            let offered = app::conf_files(project_root);
+            let offered: Vec<String> = app::conf_files(project_root)
+                .into_iter()
+                .filter(|name| !library.once.iter().any(|entry| entry.destination == *name))
+                .collect();
             let mut answer = app::PRJ_CONF.to_string();
 
             if offered.len() > 1 {
@@ -502,8 +780,13 @@ impl Zephyr {
                     kind: QuestionKind::Text,
                 };
 
-                if let Some(given) = ui.ask(&question).filter(|given| !given.is_empty()) {
-                    answer = given;
+                // Taken without a word when nobody is there to answer, it is said, with the way to give another.
+                match ui.ask(&question) {
+                    Some(given) if !given.is_empty() => answer = given,
+                    Some(_) => {}
+                    None => ui.say(report::note(format!(
+                        "Kconfig file for the libraries: {answer}, as nobody was asked. Give another with --conf."
+                    ))),
                 }
             }
 
@@ -516,6 +799,48 @@ impl Zephyr {
 
         chosen
     }
+}
+
+/// A Kconfig file of the application, as --conf names it, written from the application's folder, or why it is none: a
+/// file inside the application's folder, however it is written, ending in .conf, and none of those sysbuild reads.
+fn conf_path(given: &str, project_root: &Path) -> Result<String, String> {
+    let text = given.trim().replace('\\', "/");
+    let path = Path::new(&text);
+    let full = paths::resolve(&if path.is_absolute() || text.chars().nth(1) == Some(':') {
+        path.to_path_buf()
+    } else {
+        project_root.join(path)
+    });
+
+    if !paths::within(&full, &paths::resolve(project_root)) {
+        return Err(
+            "that is outside the application, and a library's block goes into a file of the application's own."
+                .to_string(),
+        );
+    }
+
+    let relative = paths::relative(&full, project_root).unwrap_or(text);
+    let leaf = paths::leaf(&relative).to_string();
+
+    if !leaf.ends_with(".conf") {
+        return Err(
+            "that is no Kconfig file of the application's: one ends in .conf, as prj.conf does."
+                .to_string(),
+        );
+    }
+
+    if leaf == app::SYSBUILD_CONF
+        || (leaf.starts_with("sysbuild_") && leaf.ends_with(".conf"))
+        || relative.starts_with("sysbuild/")
+    {
+        return Err(
+            "that holds settings of sysbuild, not the application's, so a library is not switched on there. Its \
+             sysbuild settings go in zephyr.project.sysbuild of its libnima.yml."
+                .to_string(),
+        );
+    }
+
+    Ok(relative)
 }
 
 impl Target for Zephyr {
@@ -543,20 +868,51 @@ impl Target for Zephyr {
         })
     }
 
-    /// Refuses sysbuild.conf as the Kconfig file of --conf.
+    /// Refuses sysbuild.conf as the Kconfig file of --conf, and an --overlay that names no
+    /// overlay of the application's.
     fn project_root(&mut self, given: &Path, _ui: &mut dyn Ui) -> Result<PathBuf, InstallError> {
-        if let Some(conf) = &self.conf_given
-            && paths::leaf(&conf.replace('\\', "/")) == app::SYSBUILD_CONF
-        {
-            return Err(InstallError(format!(
-                "{0} holds the settings of sysbuild, not the application's, so a library is not switched on there. Its \
-                 sysbuild settings go in zephyr.project.sysbuild of its libnima.yml. Leave out --conf, or give prj.conf \
-                 or a board's own file.",
-                app::SYSBUILD_CONF
-            )));
+        if let Some(overlay) = self.overlay_given.clone() {
+            match overlay::overlay_path(&overlay) {
+                Ok(cleaned) => self.overlay_given = Some(cleaned),
+                Err(why) => {
+                    return Err(InstallError(format!(
+                        "--overlay has {overlay}: {why} Nothing was installed."
+                    )));
+                }
+            }
+        }
+
+        if let Some(conf) = self.conf_given.clone() {
+            match conf_path(&conf, given) {
+                Ok(relative) => self.conf_given = Some(relative),
+                Err(why) => {
+                    return Err(InstallError(format!(
+                        "--conf has {conf}: {why} Leave out --conf, or give prj.conf or a board's own file. Nothing was \
+                         installed."
+                    )));
+                }
+            }
         }
 
         Ok(given.to_path_buf())
+    }
+
+    /// A Kconfig file named with --conf that is one of the library's own once files: it cannot hold the library's block
+    /// as well, the once file being the user's from the moment it lands.
+    fn once_clash(&self, library: &Manifest) -> Option<String> {
+        let conf = self.conf_given.as_deref()?;
+
+        library
+            .once
+            .iter()
+            .any(|entry| entry.destination == conf)
+            .then(|| {
+                format!(
+                    "{conf}, given with --conf, is one of {name}'s own once files, so it cannot also hold {name}'s block. \
+                     Leave out --conf, or give prj.conf or a board's own file. Nothing was installed.",
+                    name = library.name
+                )
+            })
     }
 
     /// Libraries go together in modules/ of the application.
@@ -579,6 +935,7 @@ impl Target for Zephyr {
                 .find(|(name, _)| *name == library.name)
                 .map(|(_, conf)| conf.clone())
                 .or_else(|| app::holding(project_root, &library.name))
+                .or_else(|| self.conf_given.clone())
                 .unwrap_or_else(|| app::PRJ_CONF.to_string()),
         );
 
@@ -603,6 +960,15 @@ impl Target for Zephyr {
         }
 
         let conf = self.conf_for(library, project_root, ui);
+
+        // A block the user changed inside is written again by the install, which keeps the file as it was beside it.
+        for (file, block) in app::changed_blocks(project_root, &library.name, &conf) {
+            findings.push(Finding::warn(
+                format!("{file}: your change inside the {block} block would be replaced"),
+                "The block is written again on every install, and the file as it is now is kept beside it as a .bak.",
+            ));
+        }
+
         let assigned = app::assigned(project_root, &library.name, &conf);
         let ours = app::in_block(project_root, &library.name, &conf);
         let part = library.part.zephyr();
@@ -685,6 +1051,11 @@ impl Target for Zephyr {
             }
         }
 
+        // The files the application's overlay includes, from zephyr.project.overlay: where each goes, asked here, when
+        // it has to be, before anything is written.
+        let plan = self.overlays_for(library, project_root, ui);
+        findings.extend(overlay::findings(project_root, &library.name, &plan));
+
         for peripheral in &library.requires.peripherals {
             findings.push(Finding::info(
                 format!("Needs {}", peripheral.describe()),
@@ -713,11 +1084,24 @@ impl Target for Zephyr {
 
         outcomes.extend(app::integrate(project_root, library, destination, &conf));
 
+        if app::find_cmakelists(project_root).is_some() {
+            let plan = self.overlays_for(library, project_root, ui);
+
+            outcomes.extend(overlay::integrate(
+                project_root,
+                library,
+                destination,
+                &plan,
+                &self.overlay_made,
+            ));
+        }
+
         outcomes
     }
 
-    /// Take the library out of the application's CMakeLists.txt and Kconfig file, and delete
-    /// the module files and the Kconfig fragment this wrote into its folder.
+    /// Take the library out of the application's CMakeLists.txt, its Kconfig file and its
+    /// overlays, and delete the module files and the Kconfig fragment this wrote into its
+    /// folder.
     fn uninstall(&mut self, project_root: &Path, library: &Installed) -> Vec<Outcome> {
         let defined = library
             .destination
@@ -725,6 +1109,8 @@ impl Target for Zephyr {
             .map(module::symbols)
             .unwrap_or_default();
         let mut outcomes = app::uninstall(project_root, &library.name);
+
+        outcomes.extend(overlay::uninstall(project_root, &library.name));
 
         if let Some(destination) = &library.destination
             && let Some(saved) = module::remove(destination)
