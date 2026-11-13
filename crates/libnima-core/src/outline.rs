@@ -546,16 +546,20 @@ fn line_of(root: &Node, path: &[&str]) -> Option<usize> {
     line
 }
 
-/// The path above a table's path.
-fn holder_of(path: &str) -> &str {
-    path.rfind('.').map_or("", |at| &path[..at])
+/// The path above a key's path: what is before the key itself, which can hold a dot of its own, so the last dot of the
+/// path is not where the key starts. A name the author gave stands as `*` in its path, and is cut at that dot.
+fn holder_of<'a>(path: &'a str, key: &str) -> &'a str {
+    match path.strip_suffix(key) {
+        Some(above) => above.strip_suffix('.').unwrap_or(above),
+        None => path.rfind('.').map_or("", |at| &path[..at]),
+    }
 }
 
 fn key_fixes(text: &str, root: &Node, found: &mut Vec<Advice>) {
     let mut pending: Vec<(usize, String, String, bool, Option<Fix>)> = Vec::new();
 
     schema::walk_keys(root, "", &mut |path: &str, entry: &Entry| {
-        let holder = holder_of(path);
+        let holder = holder_of(path, &entry.key);
 
         // A name the author gave, or what is below a list of lines, is the author's to choose.
         if path.ends_with(".*") {
@@ -1056,6 +1060,103 @@ mod tests {
             fix.text
         );
         assert!(!fix.text.contains("files:"), "{}", fix.text);
+    }
+
+    const NOTED_FILES: &[(&str, &str)] = &[
+        ("src/gled.h", "/**\n * @version 1.0.0\n */\n"),
+        ("src/gled_config.h", ""),
+        ("src/gled.c", ""),
+        ("boards/gled.dtsi", ""),
+    ];
+
+    /// A Zephyr library whose lists carry what its author chose: titles, and lines with their notes, some with a dot in
+    /// them, as the name of a file has.
+    const NOTED: &str = concat!(
+        "name: gled\n",
+        "platform: zephyr\n",
+        "requires:\n",
+        "  libnima: 1.3.0\n",
+        "headers:\n",
+        "  - src/gled.h\n",
+        "  - src/gled_config.h\n",
+        "sources:\n",
+        "  - src/gled.c\n",
+        "once:\n",
+        "  - boards/gled.dtsi\n",
+        "zephyr:\n",
+        "  project:\n",
+        "    conf:\n",
+        "      Settings for gled_config.h:\n",
+        "        - LOG=n: no messages\n",
+        "        - ASSERT=n\n",
+        "    sysbuild:\n",
+        "      - BOOTLOADER_MCUBOOT: the bootloader\n",
+        "    overlay:\n",
+        "      - boards/gled.dtsi: the LED's node, yours to edit\n",
+    );
+
+    #[test]
+    fn a_title_or_a_note_is_no_unknown_key_with_a_dot_in_it_or_without() {
+        let root = folder(NOTED_FILES);
+
+        assert_eq!(advised(root.path(), NOTED), []);
+
+        // Titles over every list, and a note under one.
+        let titled = NOTED
+            .replace(
+                "      - BOOTLOADER_MCUBOOT: the bootloader\n",
+                "      For sysbuild.conf:\n        - BOOTLOADER_MCUBOOT: the bootloader\n",
+            )
+            .replace(
+                "      - boards/gled.dtsi: the LED's node, yours to edit\n",
+                "      For app.overlay:\n        - boards/gled.dtsi: the LED's node, yours to edit\n",
+            );
+
+        assert_eq!(advised(root.path(), &titled), []);
+    }
+
+    #[test]
+    fn a_misspelt_key_beside_titles_and_notes_is_the_only_one_said() {
+        let root = folder(NOTED_FILES);
+        let text = NOTED.replace(
+            "  project:\n",
+            "  libary:\n    conf:\n      - PRINTK=n\n  project:\n",
+        );
+        let found = advised(root.path(), &text);
+
+        assert_eq!(found.len(), 1, "{found:#?}");
+        assert!(found[0].message.contains("libary"), "{found:#?}");
+        assert!(
+            fix_of(&found, "Change it to library")
+                .text
+                .contains("\n  library:\n")
+        );
+    }
+
+    #[test]
+    fn a_misspelt_key_of_a_row_is_offered_the_right_one_under_a_title_too() {
+        let root = folder(NOTED_FILES);
+
+        for (rows, fixed) in [
+            (
+                "      - fom: boards/gled.dtsi\n        to: boards/x.overlay\n",
+                "      - from: boards/gled.dtsi\n",
+            ),
+            (
+                "      For the board:\n        - fom: boards/gled.dtsi\n          to: boards/x.overlay\n",
+                "        - from: boards/gled.dtsi\n",
+            ),
+        ] {
+            let text = NOTED.replace(
+                "      - boards/gled.dtsi: the LED's node, yours to edit\n",
+                rows,
+            );
+            let found = advised(root.path(), &text);
+            let fix = fix_of(&found, "Change it to from");
+
+            assert_eq!(found.len(), 1, "{found:#?}");
+            assert!(fix.text.contains(fixed), "{}", fix.text);
+        }
     }
 
     #[test]

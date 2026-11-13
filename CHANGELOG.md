@@ -32,6 +32,7 @@
 - `--check` says CHECK when a block was changed by hand, as the install writes it again.
 - The exit codes are in `--help` and the README, and `--check` exits 1 when it says CHECK or NO.
 - Every run names the platform and what told it; errors and warnings about `libnima.yml` name its line, with forward slashes; the Kconfig file taken with nobody to ask is said; a library with no kind shows none; an unknown option is said of the libraries by name; a run whose step failed no longer ends with Done.
+- The window's libnima.yml tab no longer says of a title, or of a line with its note, that it is no key libNIMA reads, as it did of every note in a plain list, `- BT: on`, and of a title with a dot in it, such as `For gled_config.h`. A misspelt key of a row under a title is offered the right one.
 
 ## 1.2.0
 

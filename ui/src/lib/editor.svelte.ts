@@ -21,6 +21,7 @@ export type Key = {
   fresh: string;
   flow: boolean;
   on: boolean;
+  notes: boolean;
 };
 
 export type Group = { name: string; keys: string[]; platform: string | null };

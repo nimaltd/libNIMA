@@ -60,6 +60,9 @@ pub struct Key {
     pub flow: bool,
     /// Whether a flag is on when it is left out.
     pub on: bool,
+    /// Whether a line of the list can carry a note, as in `LOG=n: no messages`: a mapping of one, whose key is the
+    /// author's line, and no key of this table.
+    pub notes: bool,
 }
 
 const BLANK: Key = Key {
@@ -73,6 +76,7 @@ const BLANK: Key = Key {
     fresh: "",
     flow: false,
     on: false,
+    notes: false,
 };
 
 /// A part of the form, which holds these keys and what is below them.
@@ -618,6 +622,7 @@ pub static KEYS: &[Key] = &[
         label: "Devicetree overlay",
         help: "Files this part's #include lines in the application's overlay name, written while it is taken.",
         example: "- boards/example_lfs.dtsi",
+        notes: true,
         ..BLANK
     },
     Key {
@@ -904,6 +909,7 @@ pub static KEYS: &[Key] = &[
         label: "prj.conf",
         help: "Its block in prj.conf, beside the switch: symbols in capitals, such as LOG=n.",
         example: "- LOG=n",
+        notes: true,
         ..BLANK
     },
     Key {
@@ -912,6 +918,7 @@ pub static KEYS: &[Key] = &[
         label: "sysbuild.conf",
         help: "Its block in sysbuild.conf, as SB_CONFIG_.",
         example: "- BOOTLOADER_MCUBOOT",
+        notes: true,
         ..BLANK
     },
     Key {
@@ -945,6 +952,7 @@ pub static KEYS: &[Key] = &[
         help: "Files the application's overlay includes, in a block of #include lines: each a path, into the overlay found \
                and asked when there are several, or a from and a to.",
         example: "- boards/example.dtsi",
+        notes: true,
         ..BLANK
     },
     Key {
@@ -977,6 +985,7 @@ pub static KEYS: &[Key] = &[
         label: "Kconfig defaults",
         help: "Defaults in its Kconfig, while the switch is on.",
         example: "- BT",
+        notes: true,
         ..BLANK
     },
     Key {
@@ -985,6 +994,7 @@ pub static KEYS: &[Key] = &[
         label: "Kconfig fragment",
         help: "Its fragment, zephyr/example.conf, read after prj.conf.",
         example: "- BT_AUTO_PHY_PERIPHERAL_2M",
+        notes: true,
         ..BLANK
     },
     Key {
@@ -1024,6 +1034,7 @@ pub static KEYS: &[Key] = &[
         label: "sdkconfig.defaults",
         help: "Its block in sdkconfig.defaults: symbols in capitals, such as FREERTOS_HZ=1000.",
         example: "- FREERTOS_HZ=1000",
+        notes: true,
         ..BLANK
     },
     Key {
@@ -1156,6 +1167,7 @@ pub static KEYS: &[Key] = &[
         label: "build_flags",
         help: "After its defines, in its block of build_flags.",
         example: "- -O2",
+        notes: true,
         ..BLANK
     },
     Key {
@@ -1836,7 +1848,17 @@ fn schema_of(key: &Key) -> Value {
     found
 }
 
+/// Whether a row of a list is a line with its note: a mapping of one, whose key is none a row of that list has.
+fn is_noted_line(item: &crate::yaml::Node, row: &str) -> bool {
+    item.as_map().is_some_and(|map| {
+        map.entries.len() == 1 && find(&below(row, &map.entries[0].key)).is_none()
+    })
+}
+
 /// The path a key in a mapping stands at, from the path of the mapping, for a walk over a file that reads.
+///
+/// What the author chose under a list of lines is no key, and is passed by, whatever it holds, a dot as in the name of a
+/// file included: the title of a group, whose rows are walked as the list's own, and a line with its note.
 pub fn walk_keys(
     node: &crate::yaml::Node,
     path: &str,
@@ -1844,7 +1866,16 @@ pub fn walk_keys(
 ) {
     use crate::yaml::Value as Yaml;
 
+    let lines = find(path).filter(|key| key.shape == Shape::Lines);
+
     match &node.value {
+        Yaml::Map(map) if lines.is_some() => {
+            for entry in &map.entries {
+                if matches!(entry.value.value, Yaml::List(_)) {
+                    walk_keys(&entry.value, path, visit);
+                }
+            }
+        }
         Yaml::Map(map) => {
             for entry in &map.entries {
                 let here = below(path, &entry.key);
@@ -1858,9 +1889,12 @@ pub fn walk_keys(
         }
         Yaml::List(items) => {
             let row = format!("{path}[]");
+            let notes = lines.is_some_and(|key| key.notes);
 
             for item in items {
-                walk_keys(item, &row, visit);
+                if !(notes && is_noted_line(item, &row)) {
+                    walk_keys(item, &row, visit);
+                }
             }
         }
         _ => {}
@@ -2007,6 +2041,44 @@ mod tests {
 
             assert!(refused.is_empty(), "{}:\n{text}\n{refused:#?}", key.path);
         }
+    }
+
+    #[test]
+    fn a_line_carries_a_note_where_the_table_says_it_can() {
+        let root = folder();
+        let path = root.path().join("libnima.yml");
+        let refused = |text: &str| -> Vec<String> {
+            lint_text(root.path(), &path, text)
+                .into_iter()
+                .filter(|problem| !problem.warning)
+                .map(|problem| problem.message)
+                .collect()
+        };
+        let mut noted = 0;
+
+        for key in KEYS.iter().filter(|key| key.shape == Shape::Lines) {
+            let Some(line) = key
+                .example
+                .lines()
+                .next()
+                .filter(|line| line.starts_with("- "))
+            else {
+                assert!(!key.notes, "{} has no line to try a note on", key.path);
+                continue;
+            };
+            let text = around(key).replacen(line, &format!("{line}: its note"), 1);
+            let said = refused(&text);
+
+            if key.notes {
+                noted += 1;
+                assert!(said.is_empty(), "{}:\n{text}\n{said:#?}", key.path);
+            } else if key.path.contains(".cmake") {
+                // A line of CMake holding ': ' is CMake's own, and goes in quotes.
+                assert!(!said.is_empty(), "{}:\n{text}", key.path);
+            }
+        }
+
+        assert_eq!(noted, 8);
     }
 
     #[test]
@@ -2396,6 +2468,60 @@ mod tests {
                 "run",
                 "run[].label",
                 "nope"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_walk_passes_by_what_the_author_chose_under_a_list_of_lines() {
+        // A title and a line with its note are the author's words, and no keys, with a dot in them or without. A row of
+        // keys is walked, under a title too.
+        let node = manifest::parse(concat!(
+            "zephyr:\n",
+            "  project:\n",
+            "    conf:\n",
+            "      For gled_config.h:\n",
+            "        - LOG=n: no messages\n",
+            "    overlay:\n",
+            "      - boards/gled.dtsi: its note\n",
+            "      - from: boards/gled.dtsi\n",
+            "        to: boards/a.overlay\n",
+            "  library:\n",
+            "    conf:\n",
+            "      - BT: on\n",
+            "options:\n",
+            "  lfs:\n",
+            "    zephyr:\n",
+            "      project:\n",
+            "        overlay:\n",
+            "          With lfs.dtsi:\n",
+            "            - boards/lfs.dtsi: its note\n",
+            "            - form: boards/lfs.dtsi\n",
+            "              to: boards/b.overlay\n",
+        ))
+        .unwrap();
+        let mut seen = Vec::new();
+
+        walk_keys(&node, "", &mut |path, _| seen.push(path.to_string()));
+
+        assert_eq!(
+            seen,
+            [
+                "zephyr",
+                "zephyr.project",
+                "zephyr.project.conf",
+                "zephyr.project.overlay",
+                "zephyr.project.overlay[].from",
+                "zephyr.project.overlay[].to",
+                "zephyr.library",
+                "zephyr.library.conf",
+                "options",
+                "options.*",
+                "options.*.zephyr",
+                "options.*.zephyr.project",
+                "options.*.zephyr.project.overlay",
+                "options.*.zephyr.project.overlay[].form",
+                "options.*.zephyr.project.overlay[].to",
             ]
         );
     }
