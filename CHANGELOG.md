@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.3.1
 
 - The menu text size starts at 13 pixels again, as before 1.2.0, where nothing is zoomed, and View > Normal menu text size goes to 13. A size chosen in Settings stays as it is.
 
