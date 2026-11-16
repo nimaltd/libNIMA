@@ -171,3 +171,15 @@ fn place_and_size<R: Runtime>(window: &Window<R>) -> Option<WindowState> {
         maximized: false,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::settings::MENU_FONT_SIZE_DEFAULT;
+
+    use super::MENU_FONT_SIZE_DRAWN;
+
+    #[test]
+    fn the_default_menu_text_size_zooms_nothing() {
+        assert_eq!(f64::from(MENU_FONT_SIZE_DEFAULT), MENU_FONT_SIZE_DRAWN);
+    }
+}

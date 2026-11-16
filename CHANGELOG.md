@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- The menu text size starts at 13 pixels again, as before 1.2.0, where nothing is zoomed, and View > Normal menu text size goes to 13. A size chosen in Settings stays as it is.
+
 ## 1.3.0
 
 - A Zephyr library can include its devicetree in the application's overlay: `zephyr.project.overlay` lists the files, such as a `.dtsi` that a `once` file puts in `boards/`, and libNIMA writes a block of `#include` lines, marked with `//`, into the overlay, each line naming its file from the overlay's folder. A file alone goes into the application's one overlay, into `app.overlay` when it has none, or into those picked when it has several, asked once for every library of a run; a `from` and a `to` name the overlay in full, or every one a wildcard matches. `--overlay`, and the window's This project dialog, say it in place of what the libraries say. A file the overlay includes already, or one that is not there, is written commented out, with why. An update keeps the lines where they are, and an uninstall takes them out. An option brings its own. A library using it asks for `requires.libnima: 1.3.0`.
