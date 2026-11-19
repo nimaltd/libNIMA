@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.3.2
 
 - A folder a library names, such as `tools` in `extras`, comes whole from a private repository. With a token every file comes from GitHub's API, which answers a folder with a list of what is in it: that list was written as a file named `tools`, and a run step running `tools/keygen.py` found nothing there.
 - A folder that GitHub's list of the repository's files cannot be had for, without a token once its 60 requests an hour are spent, stops the download, saying why and what to do. It was passed over without a word, and the library went in without it. The list is asked for again when the connection drops.
