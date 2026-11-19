@@ -246,6 +246,14 @@ fn passing(failure: &Failure, token: bool) -> bool {
     }
 }
 
+/// Whether a Content-Type says JSON, which the contents API answers a folder with, where a file comes as the raw media
+/// type that was asked for, a .json file too.
+fn is_json(kind: &str) -> bool {
+    kind.split(';')
+        .next()
+        .is_some_and(|kind| kind.trim().eq_ignore_ascii_case("application/json"))
+}
+
 /// An SSH clone address: user@host:path, as git writes it, or ssh://user@host[:port]/path.
 static SSH: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
@@ -552,8 +560,8 @@ impl Client {
             .unwrap_or_default()
     }
 
-    /// One request for one file, its bytes read to the end.
-    fn get(&self, url: &str, accept: Option<&str>) -> Result<Vec<u8>, Failure> {
+    /// One request for one file, its bytes read to the end, and what GitHub says they are, from Content-Type.
+    fn get(&self, url: &str, accept: Option<&str>) -> Result<(Vec<u8>, String), Failure> {
         let mut request = self.agent.get(url);
 
         if let Some((_, token)) = &self.token {
@@ -580,6 +588,12 @@ impl Client {
             return Err(Failure::Status { code, permissions });
         }
 
+        let kind = response
+            .headers()
+            .get("Content-Type")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
         let mut body = Vec::new();
 
         response
@@ -588,7 +602,7 @@ impl Client {
             .read_to_end(&mut body)
             .map_err(|error| Failure::Connection(error.to_string()))?;
 
-        Ok(body)
+        Ok((body, kind))
     }
 
     /// The commit a ref names now, as a full SHA, or None when the API cannot say.
@@ -669,7 +683,18 @@ impl Client {
             let url = urls[(attempt - 1) as usize % urls.len()];
 
             match self.get(url, (url == api).then_some(RAW_MEDIA)) {
-                Ok(data) => return Ok(data),
+                // The API answers a folder with a list of what is in it, in JSON, whatever was asked for, where
+                // raw.githubusercontent has nothing. Written as it came, a folder of tools was a file. It is no file,
+                // and the caller looks for what it holds in the repository's listing, as for a path that is not there.
+                Ok((_, kind)) if url == api && is_json(&kind) => {
+                    return Err(DownloadError {
+                        message: format!(
+                            "{path} is a folder in {owner}/{repo} at {reference}, not a file."
+                        ),
+                        not_found: true,
+                    });
+                }
+                Ok((data, _)) => return Ok(data),
                 Err(failure) => {
                     if !passing(&failure, self.token.is_some()) || attempt == ATTEMPTS {
                         return Err(self.report(failure, owner, repo, reference, path));
@@ -810,34 +835,67 @@ impl Client {
         })
     }
 
-    /// Every file path in the repository, from the GitHub API.
+    /// Every file path in the repository, from the GitHub API, or why there is no such list.
     ///
     /// Needed because a folder or a wildcard cannot be resolved against raw.githubusercontent, which only serves one
-    /// named file at a time. None when the listing is unavailable, so the caller can fall back to treating each entry
-    /// as a literal path.
-    fn tree(&self, owner: &str, repo: &str, reference: &str) -> Option<Vec<String>> {
+    /// named file at a time. Without the list the caller can still treat each entry as a literal path.
+    fn tree(&self, owner: &str, repo: &str, reference: &str) -> Result<Vec<String>, String> {
         let url = format!(
             "{}/repos/{owner}/{repo}/git/trees/{}?recursive=1",
             self.api,
             quote_all(reference)
         );
-        let body = self.get(&url, Some("application/vnd.github+json")).ok()?;
-        let data: Value = serde_json::from_slice(&body).ok()?;
+        let mut attempt = 1;
+
+        let data: Value = loop {
+            let failure = match self.get(&url, Some("application/vnd.github+json")) {
+                Ok((body, _)) => match serde_json::from_slice(&body) {
+                    Ok(data) => break data,
+                    // Cut short on the way, as a dropped connection can leave it.
+                    Err(error) => {
+                        Failure::Connection(format!("its answer could not be read: {error}"))
+                    }
+                },
+                Err(failure) => failure,
+            };
+
+            // Only the API lists a repository, so a refusal, its limit on requests among them, is not asked again.
+            if !passing(&failure, true) || attempt == ATTEMPTS {
+                return Err(match failure {
+                    Failure::Status { code, .. }
+                        if self.token.is_none() && (code == 403 || code == 429) =>
+                    {
+                        format!(
+                            "GitHub refused it (HTTP {code}), which without a token is mostly its limit of 60 requests \
+                             an hour. Wait, or give a token with --key, or in GITHUB_TOKEN"
+                        )
+                    }
+                    Failure::Status { code, .. } => format!("GitHub answered HTTP {code}"),
+                    Failure::Connection(reason) => {
+                        format!("{reason}, after {attempt} tries. {}", offline_hint())
+                    }
+                });
+            }
+
+            thread::sleep(self.pause * (1 << (attempt - 1)));
+            attempt += 1;
+        };
 
         // Enormous repository. Literal paths still work, patterns would quietly miss files, so it is better to admit to
         // knowing nothing.
         if data.get("truncated").and_then(Value::as_bool) == Some(true) {
-            return None;
+            return Err("the repository is too big for GitHub to list whole".to_string());
         }
 
-        Some(
-            data.get("tree")?
-                .as_array()?
-                .iter()
-                .filter(|item| item.get("type").and_then(Value::as_str) == Some("blob"))
-                .filter_map(|item| item.get("path").and_then(Value::as_str).map(str::to_string))
-                .collect(),
-        )
+        data.get("tree")
+            .and_then(Value::as_array)
+            .map(|tree| {
+                tree.iter()
+                    .filter(|item| item.get("type").and_then(Value::as_str) == Some("blob"))
+                    .filter_map(|item| item.get("path").and_then(Value::as_str).map(str::to_string))
+                    .collect()
+            })
+            .ok_or_else(|| "GitHub's answer holds no list".to_string())
     }
 
     /// The bytes of a library's manifest on GitHub and its name, and nothing else of it: what a run reads first, for the
@@ -1016,18 +1074,16 @@ impl Client {
         }
 
         // One listing of the repository, and only when something actually needs it: a wildcard, now, or a plain path
-        // that turns out to be a folder, below.
-        let mut known = if entries.iter().any(|entry| is_pattern(entry)) {
-            self.tree(owner, repo, &reference)
-        } else {
-            None
-        };
-        let mut listed = known.is_some();
+        // that turns out to be a folder, below. Asked for once, and kept, with why there is none when there is none.
+        let mut listing = entries
+            .iter()
+            .any(|entry| is_pattern(entry))
+            .then(|| self.tree(owner, repo, &reference));
 
         let mut wanted: Vec<(String, String)> = Vec::new();
 
         for entry in &entries {
-            match &known {
+            match listing.as_ref().and_then(|listing| listing.as_ref().ok()) {
                 None => wanted.push((entry.clone(), entry.clone())),
                 Some(known) => {
                     for path in expand_known(entry, known) {
@@ -1052,15 +1108,20 @@ impl Client {
                     // A plain path that is not a file may be a folder, which only the repository listing can resolve.
                     // An extra may be one too, such as doc, so it is looked for there before it is passed over. The
                     // listing is asked for once, however many entries need it.
-                    if !listed {
-                        known = self.tree(owner, repo, &reference);
-                        listed = true;
-                    }
-
-                    let found = known
-                        .as_ref()
-                        .map(|known| expand_known(entry, known))
-                        .unwrap_or_default();
+                    let found = match listing
+                        .get_or_insert_with(|| self.tree(owner, repo, &reference))
+                    {
+                        Ok(known) => expand_known(entry, known),
+                        // Nobody can then say whether it is a folder or not there at all. Passed over, a folder of
+                        // tools went missing without a word, and the step that runs one failed after the install.
+                        Err(why) => {
+                            return Err(DownloadError::new(format!(
+                                "{owner}/{repo} lists {} in its {name}, which is no file there, and GitHub's list of \
+                                 the repository's files, which says what a folder holds, could not be had: {why}.",
+                                crate::yaml::quoted(entry)
+                            )));
+                        }
+                    };
 
                     if found.is_empty() {
                         // Optional by nature, so a repository missing one is fine.

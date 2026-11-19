@@ -214,6 +214,8 @@ pub struct Holding {
     pub faults: Vec<Fault>,
     /// The listing says it left some out.
     pub truncated: bool,
+    /// The answer to a request for the listing, as when the API's limit on requests is spent.
+    pub listing: Option<u16>,
     /// Every request is sent on to this server, as GitHub does for a renamed repository.
     pub redirect: Option<String>,
 }
@@ -414,6 +416,12 @@ fn reply(holding: &mut Holding, seen: Seen) -> Reply {
         };
     }
 
+    if seen.is_listing()
+        && let Some(code) = holding.listing
+    {
+        return status(code);
+    }
+
     let Some(folder) = holding
         .repos
         .iter()
@@ -429,18 +437,53 @@ fn reply(holding: &mut Holding, seen: Seen) -> Reply {
         return status(404);
     }
 
-    let (found, body) = if seen.is_listing() {
+    const JSON: &str = "application/json; charset=utf-8";
+
+    let (found, body, kind) = if seen.is_listing() {
         let tree: Vec<Value> = libnima_core::paths::files_below(&folder)
             .into_iter()
             .map(|path| serde_json::json!({"path": path, "type": "blob"}))
             .collect();
         let listing = serde_json::json!({"tree": tree, "truncated": holding.truncated});
 
-        (true, listing.to_string().into_bytes())
+        (true, listing.to_string().into_bytes(), JSON)
+    } else if seen.is_api() && folder.join(seen.file()).is_dir() {
+        // The contents API answers a folder with what is in it, in JSON, whatever the Accept asked for, where
+        // raw.githubusercontent has nothing.
+        let mut names: Vec<(String, bool)> = fs::read_dir(folder.join(seen.file()))
+            .unwrap()
+            .flatten()
+            .map(|entry| {
+                (
+                    entry.file_name().to_string_lossy().into_owned(),
+                    entry.path().is_dir(),
+                )
+            })
+            .collect();
+        names.sort();
+        let listing: Vec<Value> = names
+            .into_iter()
+            .map(|(name, below)| {
+                serde_json::json!({
+                    "name": name,
+                    "path": format!("{}/{name}", seen.file().trim_end_matches('/')),
+                    "type": if below { "dir" } else { "file" },
+                })
+            })
+            .collect();
+
+        (true, Value::Array(listing).to_string().into_bytes(), JSON)
     } else {
+        // A file comes as it is: from the API, as the raw media type asked for, and from raw.githubusercontent as text.
+        let kind = if seen.is_api() {
+            "application/vnd.github.raw; charset=utf-8"
+        } else {
+            "text/plain; charset=utf-8"
+        };
+
         match fs::read(folder.join(seen.file())) {
-            Ok(data) => (true, data),
-            Err(_) => (false, Vec::new()),
+            Ok(data) => (true, data, kind),
+            Err(_) => (false, Vec::new(), kind),
         }
     };
 
@@ -450,7 +493,7 @@ fn reply(holding: &mut Holding, seen: Seen) -> Reply {
 
     Reply::Answer {
         code: 200,
-        extra: String::new(),
+        extra: format!("Content-Type: {kind}\r\n"),
         body,
         cut: fault == Some(Fault::CutShort),
     }

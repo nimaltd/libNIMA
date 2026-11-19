@@ -845,16 +845,59 @@ fn a_listing_cut_short_counts_as_no_listing() {
         &[],
     );
 
-    // The manifest, the listing cut short, the pattern as a plain path, and the listing asked for again, for what may be
-    // a folder.
-    server.holding().faults = vec![Fault::Fine, Fault::CutShort, Fault::Fine, Fault::CutShort];
+    // The manifest, the listing cut short at each of its tries, and the pattern as a plain path. What the listing came to
+    // is kept, so it is not asked for again for what may be a folder.
+    let mut faults = vec![Fault::Fine];
+    faults.extend([Fault::CutShort; 5]);
+    server.holding().faults = faults;
 
     let error = refused(&mut server.client(), "someone/demo");
     let seen = server.seen();
 
-    assert!(seen[1].is_listing(), "{seen:?}");
-    assert_eq!(seen[2].file(), "*.h", "{seen:?}");
+    assert!(seen[1..6].iter().all(Seen::is_listing), "{seen:?}");
+    assert_eq!(seen[6].file(), "*.h", "{seen:?}");
+    assert_eq!(seen.len(), 7, "{seen:?}");
     assert!(error.message.contains("*.h"), "{}", error.message);
+}
+
+#[test]
+fn a_listing_cut_short_once_is_asked_for_again() {
+    let root = tempfile::tempdir().unwrap();
+    let server = serving(
+        root.path(),
+        "name: demo\nplatform: stm32\nheaders:\n  - demo.h\nextras:\n  - root: tools\n",
+        &[("tools/keygen.py", "")],
+    );
+    // The manifest, demo.h, tools as a file, which it is not, and the listing, cut short.
+    server.holding().faults = vec![Fault::Fine, Fault::Fine, Fault::Fine, Fault::CutShort];
+
+    let got = fetched(&mut server.client(), "someone/demo");
+
+    assert!(got.join("tools/keygen.py").is_file());
+}
+
+#[test]
+fn a_folder_with_no_listing_to_say_what_it_holds_stops_the_download() {
+    // Without a token a folder is looked for in the API's list of the repository, which GitHub refuses once its 60
+    // requests an hour are spent. The folder was passed over without a word, and the step that runs a tool from it
+    // failed after the install.
+    let root = tempfile::tempdir().unwrap();
+    let server = serving(
+        root.path(),
+        "name: demo\nplatform: stm32\nheaders:\n  - demo.h\nextras:\n  - root: tools\n",
+        &[("tools/keygen.py", "")],
+    );
+    server.holding().listing = Some(403);
+
+    let error = refused(&mut server.client(), "someone/demo");
+
+    assert!(
+        error.message.contains("lists 'tools' in its libnima.yml"),
+        "{}",
+        error.message
+    );
+    assert!(error.message.contains("HTTP 403"), "{}", error.message);
+    assert!(error.message.contains("--key"), "{}", error.message);
 }
 
 #[test]
@@ -876,6 +919,35 @@ fn every_file_named_by_only_a_to_or_a_root_is_fetched() {
     for file in ["tools/a.py", "doc/b.md", "boards/chip.overlay", "VERSION"] {
         assert!(got.join(file).is_file(), "{file}");
     }
+}
+
+#[test]
+fn with_a_token_a_folder_comes_file_by_file_and_is_no_file_itself() {
+    // The contents API answers a folder with a listing of it in JSON, where raw.githubusercontent has nothing. It was
+    // written as it came, a file named tools, and nothing that was in the folder came.
+    let root = tempfile::tempdir().unwrap();
+    let server = serving(
+        root.path(),
+        "name: demo\nplatform: stm32\nheaders:\n  - demo.h\nextras:\n  - root: tools\n  - to: doc\n",
+        &[
+            ("tools/keygen.py", "print(1)\n"),
+            ("tools/data/words.txt", ""),
+            ("doc/b.md", ""),
+        ],
+    );
+
+    let got = fetched(
+        &mut server.client_with("GITHUB_TOKEN", "t0ken"),
+        "someone/private",
+    );
+
+    assert!(got.join("tools").is_dir());
+    assert_eq!(
+        fs::read_to_string(got.join("tools/keygen.py")).unwrap(),
+        "print(1)\n"
+    );
+    assert!(got.join("tools/data/words.txt").is_file());
+    assert!(got.join("doc/b.md").is_file());
 }
 
 #[test]

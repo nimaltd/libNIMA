@@ -1104,11 +1104,61 @@ fn an_update_says_when_the_template_of_a_once_file_changed() {
         ui.out()
     );
     assert_eq!(read(project.join("src/hooks.c")), "/* hooks */\n");
-    // Said once: the next update with the same template says nothing.
+
+    // The file was still made from the first template: every install that brings another says so. The record followed
+    // the last install's template, so the next said nothing, and one that brought the first back said it changed.
+    assert!(
+        install(&project, &changed)
+            .out()
+            .contains("mini's templates/hooks.c changed since it was made")
+    );
+    assert!(
+        !install(&project, &same)
+            .out()
+            .contains("changed since it was made")
+    );
+    assert!(
+        install(&project, &changed)
+            .out()
+            .contains("changed since it was made")
+    );
+}
+
+#[test]
+fn a_once_file_made_again_is_made_from_the_template_of_its_install() {
+    // Deleted by the application, it is made again from this install's template, which the record then follows.
+    let root = tempfile::tempdir().unwrap();
+    let project = plain_app(root.path());
+    let first = lib_at(
+        &root.path().join("v1"),
+        "mini",
+        "once:\n  - from: templates/hooks.c\n    to: src/hooks.c\n",
+        &[("templates/hooks.c", "/* hooks */\n")],
+    );
+    let changed = lib_at(
+        &root.path().join("v2"),
+        "mini",
+        "once:\n  - from: templates/hooks.c\n    to: src/hooks.c\n",
+        &[("templates/hooks.c", "/* hooks, and one more */\n")],
+    );
+
+    install(&project, &first);
+    fs::remove_file(project.join("src/hooks.c")).unwrap();
+    install(&project, &changed);
+
+    assert_eq!(
+        read(project.join("src/hooks.c")),
+        "/* hooks, and one more */\n"
+    );
     assert!(
         !install(&project, &changed)
             .out()
             .contains("changed since it was made")
+    );
+    assert!(
+        install(&project, &first)
+            .out()
+            .contains("mini's templates/hooks.c changed since it was made")
     );
 }
 
@@ -3773,6 +3823,40 @@ fn an_options_cmake_in_the_wrong_place_is_refused() {
 // ----------------------------------------------------------------------------
 // The tools a library brings, and runs
 // ----------------------------------------------------------------------------
+
+#[test]
+fn tools_from_a_private_repository_are_in_their_folder_when_its_step_runs() {
+    // With a token every file comes from GitHub's contents API, which answers a folder with a listing of it in JSON:
+    // that was written as a file named tools, and the step running tools/keygen.py found nothing there.
+    let root = tempfile::tempdir().unwrap();
+    let project = plain_app(root.path());
+    let make = if cfg!(windows) {
+        "[cmd, /c, \"type tools\\\\keygen.py> sign_key.pem\"]"
+    } else {
+        "[sh, -c, \"cat tools/keygen.py > sign_key.pem\"]"
+    };
+    let library = gcore_with(
+        root.path(),
+        "",
+        &format!(
+            "extras:\n  - root: tools\nrun:\n  - label: signing-key\n    command: {make}\n    unless: sign_key.pem\n"
+        ),
+        &[("tools/keygen.py", "key\n"), ("tools/data/words.txt", "")],
+    );
+    let server = common::Github::serving(&[("someone/gcore", &library)]);
+    let mut request = common::request(&project, &[]);
+
+    request.libraries = vec!["someone/gcore".to_string()];
+    request.folder = Some("modules/gcore".to_string());
+    request.run_on = vec!["signing-key".to_string()];
+
+    let (code, ui) = run_with(server.client_with("GITHUB_TOKEN", "t0ken"), &request);
+
+    assert_eq!(code, 0, "{}\n{}", ui.out(), ui.err());
+    assert!(project.join("tools/keygen.py").is_file());
+    assert!(project.join("tools/data/words.txt").is_file());
+    assert_eq!(read(project.join("sign_key.pem")).trim(), "key");
+}
 
 #[test]
 fn tools_land_beside_cmakelists_and_run_from_there() {

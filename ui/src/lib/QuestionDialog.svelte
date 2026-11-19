@@ -17,6 +17,9 @@
   } = $props();
 
   let field: HTMLInputElement | undefined = $state();
+  /** For a yes or no, its two buttons: the one nothing typed takes has the focus, so Enter and Space both give it. */
+  let yes: HTMLButtonElement | undefined = $state();
+  let no: HTMLButtonElement | undefined = $state();
   let typed = $state("");
   /** For a choice: what the search leaves shown, and what is ticked. */
   let search = $state("");
@@ -40,7 +43,13 @@
       : [],
   );
 
-  onMount(() => field?.focus());
+  onMount(() => {
+    if (field) {
+      field.focus();
+    } else if (question.kind.type === "yesno") {
+      (question.kind.default ? yes : no)?.focus();
+    }
+  });
 
   function toggle(one: string) {
     if (question.kind.type === "choose" && !question.kind.many) {
@@ -112,8 +121,12 @@
       {/if}
       <button class="btn primary" onclick={submit}>OK</button>
     {:else}
-      <button class="btn" class:primary={!question.kind.default} onclick={() => onanswer("n")}>No</button>
-      <button class="btn" class:primary={question.kind.default} onclick={() => onanswer("y")}>Yes</button>
+      <button class="btn" class:primary={!question.kind.default} bind:this={no} onclick={() => onanswer("n")}>
+        No
+      </button>
+      <button class="btn" class:primary={question.kind.default} bind:this={yes} onclick={() => onanswer("y")}>
+        Yes
+      </button>
     {/if}
   {/snippet}
 </Modal>

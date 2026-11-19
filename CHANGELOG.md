@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- A folder a library names, such as `tools` in `extras`, comes whole from a private repository. With a token every file comes from GitHub's API, which answers a folder with a list of what is in it: that list was written as a file named `tools`, and a run step running `tools/keygen.py` found nothing there.
+- A folder that GitHub's list of the repository's files cannot be had for, without a token once its 60 requests an hour are spent, stops the download, saying why and what to do. It was passed over without a word, and the library went in without it. The list is asked for again when the connection drops.
+- The note that the template of a `once` file changed since the file was made compares with the template the file was made from. It followed the last install's: the next install said nothing, and one that brought the first template back said it changed.
+- In the window, the answer a yes or no question takes when nothing is typed, Yes for a run step, has the focus, so Enter and Space both give it.
+
 ## 1.3.1
 
 - The menu text size starts at 13 pixels again, as before 1.2.0, where nothing is zoomed, and View > Normal menu text size goes to 13. A size chosen in Settings stays as it is.

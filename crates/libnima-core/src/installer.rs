@@ -796,7 +796,8 @@ pub fn install_to(
     }
 
     // The project's own: made when missing, and never touched again, not by an update and not by an uninstall. What its
-    // template held is kept in the record, so an update that brings another template can say so, once.
+    // template held when the file was made is kept in the record, so every install that brings another template says
+    // so, and one that brings that template back does not.
     for (template, found) in yours {
         let held = fs::read(&template)
             .map(|data| usercode::whole_fingerprint(&data))
@@ -812,13 +813,17 @@ pub fn install_to(
                 _ => None,
             };
 
-            if known.is_some_and(|known| known != held) {
+            if known.as_ref().is_some_and(|known| *known != held) {
                 let name = paths::posix(template.strip_prefix(&library.root).unwrap_or(&template));
 
                 result.templates_changed.push((found.clone(), name));
             }
 
-            result.templates.push((found.clone(), held));
+            // What it was made from, which this install did not change. One with nothing recorded, there before the
+            // record kept templates, is taken as made from this one.
+            result
+                .templates
+                .push((found.clone(), known.unwrap_or(held)));
             result.yours_kept.push(found);
             continue;
         }
