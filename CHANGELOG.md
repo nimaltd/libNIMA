@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- The welcome page has a Donate card at the right: PayPal and Ko-fi, each with a QR code for a phone and a link that opens in the browser.
 - A USER CODE section whose name has spaces, as CubeMX writes `/* USER CODE BEGIN MspInit 0 */` and `Private defines`, is kept on update. Only one-word names were read as markers: the text in such a section was taken for a hand edit, saved beside the file and replaced.
 - An extra changed by hand keeps its USER CODE sections, as a header or a source does, such as settings in a script or a CMake file a library ships. It was saved beside the file and replaced whole. One as the last install wrote it is still replaced as it is, so a README whose example shows the markers is not read as holding your text.
 

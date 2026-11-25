@@ -1,5 +1,6 @@
 <script lang="ts">
   import { openUrl } from "@tauri-apps/plugin-opener";
+  import Donate from "./Donate.svelte";
   import { logo } from "./logo";
   import PathText from "./PathText.svelte";
   import { openProject, view } from "./project.svelte";
@@ -26,6 +27,10 @@
 </script>
 
 <div class="welcome">
+  <div class="donate">
+    <Donate app="libNIMA" />
+  </div>
+
   <svg
     class="logo"
     width={drawn.width}
@@ -107,6 +112,12 @@
   .logo {
     display: block;
     shape-rendering: crispEdges;
+  }
+
+  /* At the right, beside the rest, which flows around it. */
+  .donate {
+    float: right;
+    margin: 0 0 12px 3ch;
   }
 
   .lib-face {
