@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.4.1
 
 - The Welcome tab stays first, and a Project tab comes beside it once a project is open. The one tab turned into the project before, and the Welcome page was gone until the project was closed.
 
