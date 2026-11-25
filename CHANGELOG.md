@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.4.0
 
 - The welcome page has a Donate card at the right: PayPal and Ko-fi, each with a QR code for a phone and a link that opens in the browser.
 - A USER CODE section whose name has spaces, as CubeMX writes `/* USER CODE BEGIN MspInit 0 */` and `Private defines`, is kept on update. Only one-word names were read as markers: the text in such a section was taken for a hand edit, saved beside the file and replaced.
