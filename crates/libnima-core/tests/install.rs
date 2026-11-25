@@ -177,6 +177,57 @@ fn what_is_between_user_code_lines_stays_and_is_said() {
 }
 
 #[test]
+fn a_section_named_as_cubemx_names_them_stays() {
+    let header = "#ifndef DEMO_CONFIG_H\n/* USER CODE BEGIN Private defines */\n/* USER CODE END Private defines */\n  /* USER CODE BEGIN MspInit 0 */\n  /* USER CODE END MspInit 0 */\n#endif\n";
+    let root = tempfile::tempdir().unwrap();
+    let first = version(
+        root.path(),
+        "v1",
+        "demo",
+        "headers:\n  - inc/demo.h\n  - inc/demo_config.h\n",
+        &[("inc/demo_config.h", header)],
+    );
+    let second = version(
+        root.path(),
+        "v2",
+        "demo",
+        "headers:\n  - inc/demo.h\n  - inc/demo_config.h\n",
+        &[(
+            "inc/demo_config.h",
+            &header.replace("#endif", "/* v2 */\n#endif"),
+        )],
+    );
+    let project = stm32_project(root.path());
+
+    installed(&project, &first, "demo");
+
+    let config = project.join("demo/inc/demo_config.h");
+    write(
+        &config,
+        &header
+            .replace(
+                "Private defines */\n/*",
+                "Private defines */\n#define MINE 1\n/*",
+            )
+            .replace("MspInit 0 */\n  /*", "MspInit 0 */\n  start();\n  /*"),
+    );
+
+    let ui = installed(&project, &second, "demo");
+    let text = read(&config);
+
+    assert!(text.contains("#define MINE 1\n"), "{text}");
+    assert!(text.contains("  start();\n"), "{text}");
+    assert!(text.contains("/* v2 */"), "{text}");
+    assert!(
+        ui.out()
+            .contains("your USER CODE Private defines, MspInit 0"),
+        "{}",
+        ui.out()
+    );
+    assert!(backups(&project.join("demo/inc"), "demo_config.h").is_empty());
+}
+
+#[test]
 fn a_hand_edit_outside_the_sections_is_saved_before_it_goes() {
     let root = tempfile::tempdir().unwrap();
     let lib = library(root.path(), "demo", DEMO_CODE, &[]);
@@ -1895,6 +1946,83 @@ fn an_update_never_writes_over_a_file_of_the_users_it_brings_in() {
     // An uninstall takes only what the record has as the library's.
     assert_eq!(uninstall(&project, &["demo"]).0, 0);
     assert_eq!(read(project.join("demo/src/extra.c")), "/* mine */\n");
+}
+
+#[test]
+fn an_extra_changed_by_hand_keeps_its_sections() {
+    let settings =
+        "# made by demo\n# USER CODE BEGIN OPTIONS\nset(DEMO_SIZE 8)\n# USER CODE END OPTIONS\n";
+    let readme = "Set it:\n/* USER CODE BEGIN X */\n#define X 1\n/* USER CODE END X */\n";
+    let manifest = format!("{DEMO_CODE}extras: [README.md, demo.cmake]\n");
+    let root = tempfile::tempdir().unwrap();
+    let first = version(
+        root.path(),
+        "v1",
+        "demo",
+        &manifest,
+        &[("demo.cmake", settings), ("README.md", readme)],
+    );
+    let second = version(
+        root.path(),
+        "v2",
+        "demo",
+        &manifest,
+        &[
+            (
+                "demo.cmake",
+                &settings.replace("made by demo", "made by demo 2"),
+            ),
+            ("README.md", &readme.replace("X 1", "X 2")),
+        ],
+    );
+    let project = stm32_project(root.path());
+
+    installed(&project, &first, "demo");
+
+    let cmake = project.join("demo/demo.cmake");
+    write(&cmake, &settings.replace("DEMO_SIZE 8", "DEMO_SIZE 64"));
+
+    let ui = installed(&project, &second, "demo");
+
+    // The user's setting stays in the new version's file, and nothing else of theirs needed saving.
+    assert_eq!(
+        read(&cmake),
+        "# made by demo 2\n# USER CODE BEGIN OPTIONS\nset(DEMO_SIZE 64)\n# USER CODE END OPTIONS\n"
+    );
+    assert!(ui.out().contains("your USER CODE OPTIONS"), "{}", ui.out());
+    assert!(backups(&project.join("demo"), "demo.cmake").is_empty());
+
+    // The README nobody changed is the new version's, its example with it.
+    assert_eq!(
+        read(project.join("demo/README.md")),
+        readme.replace("X 1", "X 2")
+    );
+
+    // The setting is still the user's on the next install, though the file is no longer the library's copy.
+    let ui = installed(&project, &second, "demo");
+
+    assert!(read(&cmake).contains("set(DEMO_SIZE 64)"));
+    assert!(ui.out().contains("your USER CODE OPTIONS"), "{}", ui.out());
+
+    // A change outside the sections is saved beside it before the library's text goes back, the setting kept.
+    write(
+        &cmake,
+        &read(&cmake).replace("made by demo 2", "made by me"),
+    );
+
+    let ui = installed(&project, &second, "demo");
+
+    assert_eq!(
+        read(&cmake),
+        "# made by demo 2\n# USER CODE BEGIN OPTIONS\nset(DEMO_SIZE 64)\n# USER CODE END OPTIONS\n"
+    );
+    assert!(read(&backups(&project.join("demo"), "demo.cmake")[0]).contains("made by me"));
+    assert!(
+        ui.out()
+            .contains("it was changed outside its USER CODE sections"),
+        "{}",
+        ui.out()
+    );
 }
 
 #[test]

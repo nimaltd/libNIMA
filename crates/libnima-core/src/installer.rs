@@ -123,9 +123,12 @@ pub struct InstallResult {
     /// What each file written holds outside its USER CODE sections, kept in the record so the next install
     /// can tell a hand edit there.
     pub fingerprints: Vec<(PathBuf, String)>,
-    /// What each extra written holds, the whole of it, since an extra has no sections of the user's: in the
-    /// library's folder and in the project's. Kept in the record for the same reason.
+    /// What the library's copy of each extra holds, the whole of it: in the library's folder and in the project's.
+    /// Kept in the record, so the next install can tell one changed by hand, its sections with it.
     pub extras: Vec<(PathBuf, String)>,
+    /// What the library's copy of each extra holds outside its USER CODE sections, so the next install can tell a
+    /// change there from the user's text in a section.
+    pub extra_outsides: Vec<(PathBuf, String)>,
     /// The files of installed and placed that held what this install has for them already, and were left as they were,
     /// so they are not said to be written.
     pub unchanged: Vec<PathBuf>,
@@ -674,10 +677,13 @@ fn loses_nothing(found: &Path, source: &Path, is_code: bool) -> bool {
             .is_ok_and(|merged| merged.lost.is_empty() && merged.broken.is_none())
 }
 
-/// Copy an extra into place, as it is, and keep what it holds for the record.
+/// Copy an extra into place, and keep what the library's copy holds for the record.
 ///
-/// One changed by hand since the last install wrote it is put aside first, since an extra has no sections to carry the
-/// change in. Installing in place, the file already is the library's own, and is left as it is.
+/// One as the last install wrote it is replaced as it is, so the markers a README shows in an example are never taken for
+/// the user's. One changed by hand since keeps its USER CODE sections, as a file of code does, and is put aside first when
+/// anything else of the change would be lost. The record keeps the library's copy, not the one written, so a file that
+/// holds the user's sections still counts as changed by hand on the next install. Installing in place, the file already is
+/// the library's own, and is left as it is.
 fn write_extra(
     source: &Path,
     found: &Path,
@@ -696,35 +702,105 @@ fn write_extra(
             (Some(previous), Some(project_root)) => edited_extra(found, previous, project_root),
             _ => None,
         };
+        let mut out = data.clone();
 
-        // Nothing is lost when the hand edit made it what the new version holds anyway.
         if edited == Some(true)
-            && fs::read(found).is_ok_and(|old| {
-                usercode::whole_fingerprint(&old) != usercode::whole_fingerprint(&data)
-            })
+            && let Ok(old) = fs::read(found)
         {
-            let copy = backup(found).map_err(|error| io_error(error, "copy", found))?;
+            let known = match (previous, project_root) {
+                (Some(previous), Some(project_root)) => previous
+                    .get("extra_outsides")
+                    .and_then(|known| known.get(relative_text(found, project_root)))
+                    .and_then(Value::as_str),
+                _ => None,
+            };
+            let reasons = match usercode::merge(&data, &old) {
+                Ok(merged) => {
+                    let reasons = extra_losses(&merged, &old, &data, known);
 
-            result.backups.push(Saved {
-                file: found.to_path_buf(),
-                copy,
-                reason: "it was changed by hand".to_string(),
-            });
+                    if !merged.kept.is_empty() {
+                        result.preserved.push((found.to_path_buf(), merged.kept));
+                    }
+
+                    out = merged.data;
+                    reasons
+                }
+                // The library's copy has markers that do not pair, as an example may: it has no sections to keep.
+                Err(_) => vec!["it was changed by hand".to_string()],
+            };
+
+            // Nothing is lost when the hand edit made it what the new version holds anyway.
+            if !reasons.is_empty() && old != out {
+                let copy = backup(found).map_err(|error| io_error(error, "copy", found))?;
+
+                result.backups.push(Saved {
+                    file: found.to_path_buf(),
+                    copy,
+                    reason: reasons.join("; "),
+                });
+            }
         }
 
         // One that holds these bytes already is left as it was, its time with it.
-        if fs::read(found).is_ok_and(|old| old == data) {
+        if fs::read(found).is_ok_and(|old| old == out) {
             result.unchanged.push(found.to_path_buf());
         } else {
-            fs::copy(source, found).map_err(|error| io_error(error, "write", found))?;
+            fs::write(found, &out).map_err(|error| io_error(error, "write", found))?;
         }
     }
 
     result
         .extras
         .push((found.to_path_buf(), usercode::whole_fingerprint(&data)));
+    result
+        .extra_outsides
+        .push((found.to_path_buf(), usercode::fingerprint(&data)));
 
     Ok(())
+}
+
+/// What writing the library's extra over one changed by hand would lose, with its sections carried: a section the new
+/// version has no place for, sections whose markers no longer pair, or a change outside them. `known` is what the last
+/// install's copy held outside its sections; a record without it, from before extras kept sections, is compared with
+/// the new version instead, which may also find the library's own change. One with no sections at all was simply
+/// changed by hand.
+fn extra_losses(
+    merged: &usercode::Merge,
+    old: &[u8],
+    new: &[u8],
+    known: Option<&str>,
+) -> Vec<String> {
+    let mut reasons = Vec::new();
+
+    if !merged.lost.is_empty() {
+        reasons.push(format!(
+            "the new version has no USER CODE {}",
+            merged.lost.join(", ")
+        ));
+    }
+
+    if let Some(broken) = &merged.broken {
+        reasons.push(format!("its USER CODE markers do not pair ({broken})"));
+        return reasons;
+    }
+
+    let outside = usercode::fingerprint(old);
+    let sections = usercode::parse(new).is_ok_and(|parsed| !parsed.sections.is_empty());
+
+    match known {
+        _ if !sections && outside != usercode::fingerprint(new) => {
+            reasons.push("it was changed by hand".to_string());
+        }
+        Some(known) if sections && known != outside => {
+            reasons.push("it was changed outside its USER CODE sections".to_string());
+        }
+        None if sections && outside != usercode::fingerprint(new) => {
+            reasons.push("it differs outside its USER CODE sections".to_string());
+        }
+        _ => {}
+    }
+
+    reasons
 }
 
 /// Whether an extra the last install wrote was changed by hand since, or None when the record does not say what it held:
@@ -838,8 +914,8 @@ pub fn install_to(
     }
 
     // The licence and the NOTICE ride along, because the licence says they must, and anything else the manifest
-    // lists comes with them. Copied as they are: they hold no USER CODE of the user's, and a README that shows
-    // the markers in an example must not be read as having sections. One changed by hand since is put aside first.
+    // lists comes with them. One as the last install wrote it is replaced as it is, so a README that shows the
+    // markers in an example is not read as having the user's sections. One changed by hand keeps its sections.
     for entry in &library.extras {
         let source = library.root.join(&entry.source);
         let found = destination.join(&entry.destination);
@@ -1381,6 +1457,12 @@ fn record_install(
         extras.insert(relative_text(path, project_root), json!(value));
     }
 
+    let mut extra_outsides = Map::new();
+
+    for (path, value) in &result.extra_outsides {
+        extra_outsides.insert(relative_text(path, project_root), json!(value));
+    }
+
     let mut templates = Map::new();
 
     for (path, value) in &result.templates {
@@ -1447,9 +1529,11 @@ fn record_install(
             "blocks": kept("blocks"),
             "ran": kept("ran"),
             "fingerprints": fingerprints,
-            // What each extra held as it was written, the whole of it, in the library's folder and in the project's,
-            // so an install or an uninstall can tell a hand edit and save it first.
+            // What the library's copy of each extra held, the whole of it, in the library's folder and in the project's,
+            // so an install or an uninstall can tell a hand edit and save it first, and what it held outside its USER
+            // CODE sections, so a change there is told from the user's text in a section.
             "extras": extras,
+            "extra_outsides": extra_outsides,
             "defines": library.defines,
             // The libraries this one needs, so an uninstall can refuse to take one out from under another, and say
             // which are no longer needed, and the oldest version of each that will do.
@@ -1841,8 +1925,9 @@ pub fn uninstall(
 
 /// Why a library file is saved before an uninstall removes it, or None.
 ///
-/// The library's code is asked about its sections. An extra, a README for one, is copied as it is, so it is asked only
-/// whether it was changed by hand: one that shows USER CODE lines as an example must not be taken for the user's work.
+/// The library's code is asked about its sections. An extra is asked only whether it differs from the library's copy:
+/// a README that shows USER CODE lines as an example must not be taken for the user's work, and one whose sections
+/// hold the user's text does differ.
 fn what_is_yours(path: &Path, entry: &Value, project_root: &Path) -> Option<String> {
     if let Some(edited) = edited_extra(path, entry, project_root) {
         return edited.then(|| "it was changed by hand".to_string());

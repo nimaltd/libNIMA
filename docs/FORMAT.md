@@ -170,9 +170,15 @@ is the library's and is replaced.
 /* USER CODE END EXAMPLE_CONFIGURATION */
 ```
 
+A marker is a comment alone on its line, written `/* */`, `//` or `#`. Its name runs to the end of the comment and can hold
+spaces, as CubeMX's `Private defines` and `MspInit 0` do, and each name is used once in a file.
+
 A section the new version no longer has, a hand edit outside the sections and markers that no longer pair are each saved
-beside the file before it is replaced, and the run says so. An extra has no sections, even one that shows the markers: one
-changed by hand is saved beside it the same way, before an install replaces it, or an update or an uninstall removes it.
+beside the file before it is replaced, and the run says so. Every file of the library's keeps its sections, the `extras` as
+well, and only `once` files have none, since they are the project's own. An extra as the last install wrote it is replaced
+as it is, so a README whose example shows the markers is not taken for one holding the user's text. One changed by hand
+keeps its sections, and is saved beside it the same way, before an install replaces it, or an update or an uninstall
+removes it, when anything else of the change would be lost.
 
 ### run
 

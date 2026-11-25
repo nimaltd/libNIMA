@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- A USER CODE section whose name has spaces, as CubeMX writes `/* USER CODE BEGIN MspInit 0 */` and `Private defines`, is kept on update. Only one-word names were read as markers: the text in such a section was taken for a hand edit, saved beside the file and replaced.
+- An extra changed by hand keeps its USER CODE sections, as a header or a source does, such as settings in a script or a CMake file a library ships. It was saved beside the file and replaced whole. One as the last install wrote it is still replaced as it is, so a README whose example shows the markers is not read as holding your text.
+
 ## 1.3.2
 
 - A folder a library names, such as `tools` in `extras`, comes whole from a private repository. With a token every file comes from GitHub's API, which answers a folder with a list of what is in it: that list was written as a file named `tools`, and a run step running `tools/keygen.py` found nothing there.

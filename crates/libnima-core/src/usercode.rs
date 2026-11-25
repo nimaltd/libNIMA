@@ -24,11 +24,14 @@ use regex::bytes::Regex;
 use crate::text::{byte_lines, find_bytes, is_blank, short_hash, trim_byte_ending};
 
 /// A marker is a comment alone on its line, the way CubeMX writes it, so a sentence or
-/// a README that only mentions one is not taken for one. The name is one word:
-/// Includes, PV, 0, SEQ_CONFIGURATION.
+/// a README that only mentions one is not taken for one. The name runs to the end of the
+/// comment and can hold spaces, as CubeMX's own do: Includes, PV, 0, SEQ_CONFIGURATION,
+/// Private defines, MspInit 0.
 static MARKER: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?-u)\A[ \t]*(?:/\*|//|#)[ \t]*USER CODE (BEGIN|END)[ \t]+([^\s*]+)[ \t]*(?:\*/)?[ \t]*\z")
-        .expect("a valid pattern")
+    Regex::new(
+        r"(?-u)\A[ \t]*(?:/\*|//|#)[ \t]*USER CODE (BEGIN|END)[ \t]+([^\s*](?:[^*\r\n]*[^\s*])?)[ \t]*(?:\*/)?[ \t]*\z",
+    )
+    .expect("a valid pattern")
 });
 
 /// The markers in a file do not pair up, with the line that shows it.
@@ -101,7 +104,11 @@ pub fn parse(data: &[u8]) -> Result<Parsed<'_>, MarkerError> {
             continue;
         };
 
-        let name = ascii_name(&marker[2]);
+        // MspInit 0 and MspInit  0 are one name: spaces between words count as one.
+        let name = ascii_name(&marker[2])
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
 
         if &marker[1] == b"BEGIN" {
             if let Some((inside, _)) = &open {
@@ -273,9 +280,8 @@ pub fn fingerprint(data: &[u8]) -> String {
     short_hash(&outside)
 }
 
-/// What a file holds, the whole of it, as a short hash: for a file copied as it is, such as an extra, which has no sections
-/// of the user's, and whose markers, when it shows some, are only an example. Line endings do not count, as in
-/// fingerprint().
+/// What a file holds, the whole of it, as a short hash: for an extra, which is replaced as it is unless it was changed by
+/// hand, since a README's markers are only an example. Line endings do not count, as in fingerprint().
 pub fn whole_fingerprint(data: &[u8]) -> String {
     let lines: Vec<&[u8]> = byte_lines(data).into_iter().map(trim_byte_ending).collect();
 
@@ -319,8 +325,30 @@ mod tests {
     }
 
     #[test]
+    fn names_hold_spaces_as_cubemx_writes_them() {
+        let text = b"/* USER CODE BEGIN Private defines */\n#define A 1\n/* USER CODE END Private defines */\n  /* USER CODE BEGIN MspInit 0 */\n  /* USER CODE END MspInit  0 */\n// USER CODE BEGIN ICACHE_Init 1\n// USER CODE END ICACHE_Init 1\n";
+        let parsed = parse(text).unwrap();
+
+        assert_eq!(
+            names(&parsed),
+            ["Private defines", "MspInit 0", "ICACHE_Init 1"]
+        );
+        assert_eq!(parsed.section("Private defines"), Some((1, 2)));
+    }
+
+    #[test]
+    fn a_section_whose_name_has_spaces_is_kept() {
+        let new = b"/* USER CODE BEGIN MspInit 0 */\n/* USER CODE END MspInit 0 */\n/* USER CODE BEGIN MspInit 1 */\n/* USER CODE END MspInit 1 */\n";
+        let old = b"/* USER CODE BEGIN MspInit 0 */\nzero();\n/* USER CODE END MspInit 0 */\n/* USER CODE BEGIN MspInit 1 */\none();\n/* USER CODE END MspInit 1 */\n";
+        let merged = merge(new, old).unwrap();
+
+        assert_eq!(merged.data, old);
+        assert_eq!(merged.kept, ["MspInit 0", "MspInit 1"]);
+    }
+
+    #[test]
     fn a_sentence_that_mentions_a_marker_is_not_one() {
-        let text = b"Put it between USER CODE BEGIN and END.\nsee /* USER CODE BEGIN X */ here\n";
+        let text = b"Put it between USER CODE BEGIN and END.\nsee /* USER CODE BEGIN X */ here\n// USER CODE BEGIN/END mark your lines\n/* USER CODE BEGIN X */ int x;\n";
 
         assert!(parse(text).unwrap().sections.is_empty());
     }
