@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- The Welcome tab stays first, and a Project tab comes beside it once a project is open. The one tab turned into the project before, and the Welcome page was gone until the project was closed.
+
 ## 1.4.0
 
 - The welcome page has a Donate card at the right: PayPal and Ko-fi, each with a QR code for a phone and a link that opens in the browser.

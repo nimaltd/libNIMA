@@ -5,11 +5,15 @@
 
   // The welcome page's way to give: PayPal and Ko-fi, each by its link from here
   // or by its QR code from a phone. All four NIMA apps show the same.
-  let { app }: { app: string } = $props();
-
-  /** How wide each QR card is drawn, in pixels, the same in all four apps: as big as fits beside terNIMA's welcome text
-   * in its first window, 1200 pixels wide. The whole is two of them and the gap between. */
-  const SIZE = 240;
+  let {
+    app,
+    size = 240,
+  }: {
+    app: string;
+    /** How wide each QR card is drawn, in CSS pixels: 240 on screen in all four apps, as big as fits beside terNIMA's
+     * welcome text in its first window, 1200 pixels wide. An app whose window is zoomed gives less, to make up for it. */
+    size?: number;
+  } = $props();
 
   const GIFTS = [
     { name: "PayPal", url: "https://www.paypal.com/donate/?business=nima.askari@gmail.com", qr: paypalQr },
@@ -17,7 +21,7 @@
   ];
 </script>
 
-<aside class="donate" style:--qr={`${SIZE}px`}>
+<aside class="donate" style:--qr={`${size}px`}>
   <p class="title">Donate</p>
   <p>{app} is free.<br />If it saves you time:</p>
   <div class="gifts">
@@ -25,7 +29,7 @@
       <div class="gift">
         <button class="qr" title="Give through {gift.name}" onclick={() => void openUrl(gift.url)}>
           <!-- The cards are 990 by 1193. -->
-          <img src={gift.qr} width={SIZE} height={Math.round((SIZE * 1193) / 990)} alt="{gift.name} QR code for Nima Askari" />
+          <img src={gift.qr} width={size} height={Math.round((size * 1193) / 990)} alt="{gift.name} QR code for Nima Askari" />
         </button>
         <button class="link" onclick={() => void openUrl(gift.url)}>{gift.name}</button>
       </div>

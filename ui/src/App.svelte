@@ -16,6 +16,7 @@
   import SettingsDialog from "./lib/SettingsDialog.svelte";
   import TokenDialog from "./lib/TokenDialog.svelte";
   import UpdateDialog from "./lib/UpdateDialog.svelte";
+  import Welcome from "./lib/Welcome.svelte";
   import { asking, confirmFirst } from "./lib/confirm.svelte";
   import { editor, showFileOf, tryOnProject } from "./lib/editor.svelte";
   import { buildMenus, isEnabled, itemForKey, menuCommands, menuForAltKey } from "./lib/menus";
@@ -43,7 +44,17 @@
   type PathState = { found: boolean; folder: string };
 
   let info = $state<AppInfo>();
-  let tab: "project" | "editor" = $state("project");
+  /** The Welcome tab stays first, whether a project is open or not; the Project tab is there once one is. */
+  let tab: "welcome" | "project" | "editor" = $state("welcome");
+  /** The project last shown, so one opened from anywhere, the Welcome page's list included, comes to the front. */
+  let shownFolder: string | null = null;
+  $effect(() => {
+    const folder = view.project?.folder ?? null;
+    if (folder !== null && folder !== shownFolder) {
+      tab = "project";
+    }
+    shownFolder = folder;
+  });
   let aboutOpen = $state(false);
   let settingsOpen = $state(false);
   let changeOpen = $state(false);
@@ -91,7 +102,7 @@
       tab = "project";
       void projectTab.pickFolder();
     },
-    showTab: (shown) => (tab = shown),
+    showTab: (shown) => (tab = shown === "project" && !view.project ? "welcome" : shown),
     inEditor: () => tab === "editor",
     undo: () => editorTab.runUndo(),
     redo: () => editorTab.runRedo(),
@@ -241,10 +252,16 @@
   <MenuBar bind:this={menuBar} {menus} onclose={() => {}} />
 
   <div class="tabs" role="tablist">
-    <button class="tab" class:active={tab === "project"} role="tab" aria-selected={tab === "project"} onclick={() => (tab = "project")}>
-      <span class="dot" class:open={view.project !== null}></span>
-      {view.project ? "Project" : "Welcome"}
+    <button class="tab" class:active={tab === "welcome"} role="tab" aria-selected={tab === "welcome"} onclick={() => (tab = "welcome")}>
+      <span class="dot"></span>
+      Welcome
     </button>
+    {#if view.project}
+      <button class="tab" class:active={tab === "project"} role="tab" aria-selected={tab === "project"} onclick={() => (tab = "project")}>
+        <span class="dot open"></span>
+        Project
+      </button>
+    {/if}
     <button class="tab" class:active={tab === "editor"} role="tab" aria-selected={tab === "editor"} onclick={() => (tab = "editor")}>
       <span class="dot" class:open={editor.title !== "" && !editor.dirty} class:unsaved={editor.dirty}></span>
       libnima.yml{editor.dirty ? " *" : ""}
@@ -252,6 +269,9 @@
   </div>
 
   <main class="pane" style:--view-size={`${unzoomed(settings.font_size)}px`}>
+    <div class="page" class:hidden={tab !== "welcome"}>
+      <Welcome version={info?.version ?? ""} onopen={() => void projectTab.pickProject()} />
+    </div>
     <div class="page" class:hidden={tab !== "project"}>
       <ProjectTab
         bind:this={projectTab}
